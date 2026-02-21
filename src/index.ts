@@ -101,6 +101,8 @@ export interface VibePlugin {
   name: string;
   version: string;
   description?: string;
+  cliCommand?: string;
+  apiPrefix?: string;
   onCliSetup?: (program: Command) => void | Promise<void>;
 }
 
@@ -108,6 +110,7 @@ export const vibePlugin: VibePlugin = {
   name: "ai",
   version: "1.0.0",
   description: "AI tool management for VibeControls Agent",
+  cliCommand: "ai",
 
   onCliSetup(program: Command) {
     const aiCmd = program
@@ -118,18 +121,18 @@ export const vibePlugin: VibePlugin = {
     aiCmd
       .command("list")
       .description("List all supported AI tools and their status")
-      .option("--cwd <dir>", "Project directory to check configs", process.cwd())
+      .option(
+        "--cwd <dir>",
+        "Project directory to check configs",
+        process.cwd(),
+      )
       .action((options) => {
         console.log("\n  \x1b[1m── AI Tools ──\x1b[0m\n");
 
         for (const tool of AI_TOOLS) {
           const { installed, version } = isToolInstalled(tool);
-          const icon = installed
-            ? "\x1b[32m✓\x1b[0m"
-            : "\x1b[31m✗\x1b[0m";
-          const versionStr = installed
-            ? ` (${version.split("\n")[0]})`
-            : "";
+          const icon = installed ? "\x1b[32m✓\x1b[0m" : "\x1b[31m✗\x1b[0m";
+          const versionStr = installed ? ` (${version.split("\n")[0]})` : "";
 
           console.log(
             `  ${icon} \x1b[1m${tool.displayName}\x1b[0m${versionStr}`,
@@ -139,9 +142,7 @@ export const vibePlugin: VibePlugin = {
           // Check for config files
           const configs = findConfigFiles(tool, options.cwd);
           if (configs.length > 0) {
-            console.log(
-              `    Config: ${configs.join(", ")}`,
-            );
+            console.log(`    Config: ${configs.join(", ")}`);
           } else {
             console.log(`    Config: (none found)`);
           }
@@ -153,7 +154,10 @@ export const vibePlugin: VibePlugin = {
     aiCmd
       .command("install")
       .description("Install an AI tool")
-      .argument("<tool>", `Tool name (${AI_TOOLS.map((t) => t.name).join(", ")})`)
+      .argument(
+        "<tool>",
+        `Tool name (${AI_TOOLS.map((t) => t.name).join(", ")})`,
+      )
       .action((toolName: string) => {
         const tool = AI_TOOLS.find((t) => t.name === toolName);
         if (!tool) {
@@ -220,7 +224,10 @@ export const vibePlugin: VibePlugin = {
         }
 
         // Create parent directory if needed (e.g. .claude/)
-        const parentDir = join(dir, primaryConfig.split("/").slice(0, -1).join("/"));
+        const parentDir = join(
+          dir,
+          primaryConfig.split("/").slice(0, -1).join("/"),
+        );
         if (parentDir !== dir) {
           mkdirSync(parentDir, { recursive: true });
         }
@@ -243,9 +250,7 @@ export const vibePlugin: VibePlugin = {
         let allInstalled = true;
         for (const tool of AI_TOOLS) {
           const { installed, version } = isToolInstalled(tool);
-          const icon = installed
-            ? "\x1b[32m✓\x1b[0m"
-            : "\x1b[31m✗\x1b[0m";
+          const icon = installed ? "\x1b[32m✓\x1b[0m" : "\x1b[31m✗\x1b[0m";
 
           console.log(
             `  ${icon} ${tool.displayName.padEnd(20)} ${installed ? version.split("\n")[0] : "not installed"}`,
@@ -255,7 +260,9 @@ export const vibePlugin: VibePlugin = {
 
         console.log();
         if (!allInstalled) {
-          console.log("  Install missing tools: \x1b[1mvibe ai install <tool>\x1b[0m\n");
+          console.log(
+            "  Install missing tools: \x1b[1mvibe ai install <tool>\x1b[0m\n",
+          );
         }
       });
   },
