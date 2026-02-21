@@ -1,13 +1,11 @@
 import type { Command } from "commander";
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
+import { existsSync, mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
-import { homedir } from "os";
-import { execSync } from "child_process";
 
 /**
- * @burdenoff/vibe-plugin-ai
+ * @burdenoff/vibe-plugin-ai v2.0.0
  *
- * AI tool management plugin for VibeControls Agent.
+ * AI tool management plugin for VibeControls Agent (Bun runtime).
  * Adds the `vibe ai` command group for managing AI coding tools
  * and their configurations.
  *
@@ -20,6 +18,26 @@ import { execSync } from "child_process";
  *
  * Install: vibe plugin install @burdenoff/vibe-plugin-ai
  */
+
+// ── Plugin Interfaces ────────────────────────────────────────────────────────
+
+export interface HostServices {
+  logger?: {
+    info: (msg: string) => void;
+    warn: (msg: string) => void;
+    error: (msg: string) => void;
+    debug: (msg: string) => void;
+  };
+  config?: Record<string, unknown>;
+}
+
+export interface VibePlugin {
+  name: string;
+  version: string;
+  description: string;
+  cliCommand: string;
+  onCliSetup: (program: Command, hostServices?: HostServices) => void;
+}
 
 // ── Tool Definitions ─────────────────────────────────────────────────────────
 
@@ -36,7 +54,7 @@ const AI_TOOLS: AiTool[] = [
   {
     name: "claude-code",
     displayName: "Claude Code",
-    detectCommand: "claude --version",
+    detectCommand: "claude",
     installCommand: "npm install -g @anthropic-ai/claude-code",
     configFiles: ["CLAUDE.md", ".claude/settings.json"],
     description: "Anthropic's AI coding agent",
@@ -44,7 +62,7 @@ const AI_TOOLS: AiTool[] = [
   {
     name: "opencode",
     displayName: "OpenCode",
-    detectCommand: "opencode --version",
+    detectCommand: "opencode",
     installCommand: "npm install -g opencode",
     configFiles: ["OPENCODE.md", ".opencode/config.json"],
     description: "Open-source AI coding assistant",
@@ -52,7 +70,7 @@ const AI_TOOLS: AiTool[] = [
   {
     name: "codex",
     displayName: "OpenAI Codex CLI",
-    detectCommand: "codex --version",
+    detectCommand: "codex",
     installCommand: "npm install -g @openai/codex",
     configFiles: ["AGENTS.md", "codex.json"],
     description: "OpenAI's Codex CLI agent",
@@ -60,14 +78,15 @@ const AI_TOOLS: AiTool[] = [
   {
     name: "copilot",
     displayName: "GitHub Copilot",
-    detectCommand: "gh copilot --version",
+    detectCommand: "github-copilot-cli",
+    installCommand: "npm install -g @githubnext/github-copilot-cli",
     configFiles: [".github/copilot-instructions.md"],
     description: "GitHub Copilot in the CLI",
   },
   {
     name: "cursor-agent",
     displayName: "Cursor Agent",
-    detectCommand: "cursor --version",
+    detectCommand: "cursor",
     configFiles: [".cursor/rules", ".cursorrules"],
     description: "Cursor AI code editor agent",
   },
@@ -80,15 +99,32 @@ function isToolInstalled(tool: AiTool): {
   version: string;
 } {
   try {
-    const version = execSync(tool.detectCommand, {
-      encoding: "utf8",
-      timeout: 10000,
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-    return { installed: true, version };
+    const proc = Bun.spawnSync([tool.detectCommand, "--version"], {
+      timeout: 5000,
+      stdout: "pipe",
+      stderr: "ignore",
+    });
+
+    if (proc.exitCode === 0) {
+      const version = proc.stdout.toString().trim();
+      return { installed: true, version };
+    }
+
+    return { installed: false, version: "" };
   } catch {
     return { installed: false, version: "" };
   }
+}
+
+function runInstallCommand(command: string): boolean {
+  const parts = command.split(" ");
+  const proc = Bun.spawnSync(parts, {
+    timeout: 120_000,
+    stdout: "inherit",
+    stderr: "inherit",
+  });
+
+  return proc.exitCode === 0;
 }
 
 function findConfigFiles(tool: AiTool, directory: string): string[] {
@@ -97,22 +133,13 @@ function findConfigFiles(tool: AiTool, directory: string): string[] {
 
 // ── Plugin Export ────────────────────────────────────────────────────────────
 
-export interface VibePlugin {
-  name: string;
-  version: string;
-  description?: string;
-  cliCommand?: string;
-  apiPrefix?: string;
-  onCliSetup?: (program: Command) => void | Promise<void>;
-}
-
 export const vibePlugin: VibePlugin = {
   name: "ai",
-  version: "1.0.0",
-  description: "AI tool management for VibeControls Agent",
+  version: "2.0.0",
+  description: "AI tool management and integration",
   cliCommand: "ai",
 
-  onCliSetup(program: Command) {
+  onCliSetup(program: Command, _hostServices?: HostServices) {
     const aiCmd = program
       .command("ai")
       .description("Manage AI coding tools and configurations");
@@ -126,7 +153,7 @@ export const vibePlugin: VibePlugin = {
         "Project directory to check configs",
         process.cwd(),
       )
-      .action((options) => {
+      .action((options: { cwd: string }) => {
         console.log("\n  \x1b[1m── AI Tools ──\x1b[0m\n");
 
         for (const tool of AI_TOOLS) {
@@ -139,7 +166,6 @@ export const vibePlugin: VibePlugin = {
           );
           console.log(`    ${tool.description}`);
 
-          // Check for config files
           const configs = findConfigFiles(tool, options.cwd);
           if (configs.length > 0) {
             console.log(`    Config: ${configs.join(", ")}`);
@@ -183,12 +209,13 @@ export const vibePlugin: VibePlugin = {
         }
 
         console.log(`  Installing ${tool.displayName}...`);
-        try {
-          execSync(tool.installCommand, { stdio: "inherit", timeout: 120000 });
+        const success = runInstallCommand(tool.installCommand);
+
+        if (success) {
           console.log(
             `\n  \x1b[32m✓ ${tool.displayName} installed successfully.\x1b[0m\n`,
           );
-        } catch {
+        } else {
           console.error(
             `\n  \x1b[31m✗ Failed to install ${tool.displayName}.\x1b[0m`,
           );
@@ -203,7 +230,7 @@ export const vibePlugin: VibePlugin = {
       .description("Initialize AI tool config in the current project")
       .argument("<tool>", "Tool name")
       .option("--cwd <dir>", "Project directory", process.cwd())
-      .action((toolName: string, options) => {
+      .action((toolName: string, options: { cwd: string }) => {
         const tool = AI_TOOLS.find((t) => t.name === toolName);
         if (!tool) {
           console.error(
@@ -212,7 +239,7 @@ export const vibePlugin: VibePlugin = {
           process.exit(1);
         }
 
-        const dir = options.cwd as string;
+        const dir = options.cwd;
         const primaryConfig = tool.configFiles[0];
         const configPath = join(dir, primaryConfig);
 
@@ -224,15 +251,12 @@ export const vibePlugin: VibePlugin = {
         }
 
         // Create parent directory if needed (e.g. .claude/)
-        const parentDir = join(
-          dir,
-          primaryConfig.split("/").slice(0, -1).join("/"),
-        );
-        if (parentDir !== dir) {
+        const segments = primaryConfig.split("/");
+        if (segments.length > 1) {
+          const parentDir = join(dir, ...segments.slice(0, -1));
           mkdirSync(parentDir, { recursive: true });
         }
 
-        // Generate a starter config
         const content = generateStarterConfig(tool);
         writeFileSync(configPath, content);
         console.log(
@@ -285,9 +309,9 @@ This file provides guidance to Claude Code when working with this project.
 
 \`\`\`bash
 # Add your development commands
-npm run dev
-npm run build
-npm run test
+bun run dev
+bun run build
+bun run test
 \`\`\`
 
 ## Code Style & Conventions
@@ -316,9 +340,9 @@ Instructions for AI agents working on this project.
 ## Development Workflow
 
 \`\`\`bash
-npm run dev
-npm run build
-npm run test
+bun run dev
+bun run build
+bun run test
 \`\`\`
 `;
 

@@ -23,13 +23,13 @@ npm install -g @burdenoff/vibe-plugin-ai
 
 ## Supported Tools
 
-| Tool | CLI Command | Config Files |
-|------|------------|-------------|
-| Claude Code | `claude` | `CLAUDE.md`, `.claude/settings.json` |
-| OpenCode | `opencode` | `OPENCODE.md`, `.opencode/config.json` |
-| Codex CLI | `codex` | `AGENTS.md`, `codex.json` |
-| GitHub Copilot | `gh copilot` | `.github/copilot-instructions.md` |
-| Cursor Agent | `cursor` | `.cursor/rules`, `.cursorrules` |
+| Tool           | CLI Command  | Config Files                           |
+| -------------- | ------------ | -------------------------------------- |
+| Claude Code    | `claude`     | `CLAUDE.md`, `.claude/settings.json`   |
+| OpenCode       | `opencode`   | `OPENCODE.md`, `.opencode/config.json` |
+| Codex CLI      | `codex`      | `AGENTS.md`, `codex.json`              |
+| GitHub Copilot | `gh copilot` | `.github/copilot-instructions.md`      |
+| Cursor Agent   | `cursor`     | `.cursor/rules`, `.cursorrules`        |
 
 ## CLI Commands
 
