@@ -1,13 +1,19 @@
 import type { Command } from "commander";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { Elysia } from "elysia";
+import { PromptDatabase } from "./db/prompts.js";
+import { createPromptRoutes } from "./routes/prompts.js";
 
 /**
- * @burdenoff/vibe-plugin-ai v2.0.0
+ * @burdenoff/vibe-plugin-ai v3.0.0
  *
- * AI tool management plugin for VibeControls Agent (Bun runtime).
- * Adds the `vibe ai` command group for managing AI coding tools
- * and their configurations.
+ * AI tool management + prompt templates plugin for VibeControls Agent (Bun runtime).
+ *
+ * Features:
+ *   - `vibe ai` CLI commands for managing AI coding tools
+ *   - REST API for prompt template CRUD (SQLite-backed)
+ *   - Prompt variable extraction and rendering
  *
  * Supported tools:
  *   - claude-code (Anthropic Claude Code)
@@ -23,10 +29,10 @@ import { join } from "node:path";
 
 export interface HostServices {
   logger?: {
-    info: (msg: string) => void;
-    warn: (msg: string) => void;
-    error: (msg: string) => void;
-    debug: (msg: string) => void;
+    info: (source: string, msg: string) => void;
+    warn: (source: string, msg: string) => void;
+    error: (source: string, msg: string) => void;
+    debug: (source: string, msg: string) => void;
   };
   config?: Record<string, unknown>;
 }
@@ -39,8 +45,23 @@ export interface VibePlugin {
     "backend" | "frontend" | "cli" | "provider" | "adapter" | "integration"
   >;
   cliCommand: string;
+  apiPrefix?: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  createRoutes?: () => any;
   onCliSetup: (program: Command, hostServices?: HostServices) => void;
+  onServerStart?: (app: unknown, hostServices?: HostServices) => void;
+  onServerStop?: () => void;
 }
+
+// ── Re-exports ───────────────────────────────────────────────────────────────
+
+export type {
+  Prompt,
+  PromptCategory,
+  CreatePromptInput,
+  UpdatePromptInput,
+  PromptFilter,
+} from "./db/prompts.js";
 
 // ── Tool Definitions ─────────────────────────────────────────────────────────
 
@@ -140,19 +161,76 @@ function findConfigFiles(tool: AiTool, directory: string): string[] {
   });
 }
 
+// ── Prompt Database (singleton) ──────────────────────────────────────────────
+
+let promptDb: PromptDatabase | null = null;
+
+function getPromptDb(): PromptDatabase {
+  if (!promptDb) {
+    promptDb = new PromptDatabase();
+  }
+  return promptDb;
+}
+
 // ── Plugin Export ────────────────────────────────────────────────────────────
 
 export const vibePlugin: VibePlugin = {
   name: "ai",
-  version: "2.0.0",
-  description: "AI tool management and integration",
-  tags: ["cli", "integration"],
+  version: "3.0.0",
+  description: "AI tool management, prompt templates, and integration",
+  tags: ["backend", "cli", "integration"],
   cliCommand: "ai",
+  apiPrefix: "/api/ai",
+
+  createRoutes() {
+    const db = getPromptDb();
+
+    return (
+      new Elysia()
+        // ── Tool detection endpoint ─────────────────────────────────────
+        .get("/tools", () => {
+          return {
+            tools: AI_TOOLS.map((tool) => {
+              const { installed, version } = isToolInstalled(tool);
+              const configs = findConfigFiles(tool, process.cwd());
+              return {
+                name: tool.name,
+                displayName: tool.displayName,
+                description: tool.description,
+                installed,
+                version: installed ? version.split("\n")[0] : "",
+                configFiles: tool.configFiles,
+                foundConfigs: configs,
+                installCommand: tool.installCommand,
+              };
+            }),
+          };
+        })
+        // ── Prompt CRUD routes ──────────────────────────────────────────
+        .use(createPromptRoutes(db))
+    );
+  },
+
+  onServerStart(_app, hostServices) {
+    // Ensure prompt DB is initialized when server starts
+    getPromptDb();
+    hostServices?.logger?.info(
+      "ai-plugin",
+      "AI plugin started — prompt database initialized",
+    );
+  },
+
+  onServerStop() {
+    if (promptDb) {
+      promptDb.close();
+      promptDb = null;
+    }
+  },
 
   onCliSetup(program: Command, _hostServices?: HostServices) {
     const aiCmd = program
       .command("ai")
-      .description("Manage AI coding tools and configurations");
+      .description("Manage AI coding tools and prompt templates");
 
     // ── vibe ai list ────────────────────────────────────────────────
     aiCmd
@@ -302,6 +380,133 @@ export const vibePlugin: VibePlugin = {
             "  Install missing tools: \x1b[1mvibe ai install <tool>\x1b[0m\n",
           );
         }
+      });
+
+    // ── vibe ai prompts ─────────────────────────────────────────────
+    const promptsCmd = aiCmd
+      .command("prompts")
+      .description("Manage prompt templates");
+
+    promptsCmd
+      .command("list")
+      .description("List all prompt templates")
+      .option("--shared", "Show only shared prompts")
+      .option("--category <cat>", "Filter by category")
+      .option("--limit <n>", "Max results", "20")
+      .action(
+        (options: { shared?: boolean; category?: string; limit: string }) => {
+          const db = getPromptDb();
+          const result = db.list(
+            {
+              isShared:
+                options.shared !== undefined ? options.shared : undefined,
+              category: options.category as
+                | "GENERAL"
+                | "CODING"
+                | "DEBUGGING"
+                | "REVIEW"
+                | "DOCUMENTATION"
+                | "TESTING"
+                | "DEPLOYMENT"
+                | "CUSTOM"
+                | undefined,
+            },
+            { limit: parseInt(options.limit, 10) },
+          );
+
+          if (result.items.length === 0) {
+            console.log("\n  No prompts found.\n");
+            return;
+          }
+
+          console.log(`\n  \x1b[1m── Prompts (${result.total}) ──\x1b[0m\n`);
+          for (const prompt of result.items) {
+            const shared = prompt.isShared ? " \x1b[36m[shared]\x1b[0m" : "";
+            const tags =
+              prompt.tags.length > 0
+                ? ` \x1b[33m[${prompt.tags.join(", ")}]\x1b[0m`
+                : "";
+            const uses =
+              prompt.usageCount > 0
+                ? ` \x1b[90m(${prompt.usageCount} uses)\x1b[0m`
+                : "";
+            console.log(
+              `  \x1b[1m${prompt.name}\x1b[0m${shared}${tags}${uses}`,
+            );
+            const preview = prompt.content
+              .replace(/\n/g, " ")
+              .slice(0, 60)
+              .trim();
+            console.log(
+              `    ${preview}${prompt.content.length > 60 ? "..." : ""}`,
+            );
+            console.log();
+          }
+        },
+      );
+
+    promptsCmd
+      .command("search")
+      .description("Search prompts by name or content")
+      .argument("<query>", "Search query")
+      .option("--limit <n>", "Max results", "10")
+      .action((query: string, options: { limit: string }) => {
+        const db = getPromptDb();
+        const results = db.search(
+          query,
+          undefined,
+          parseInt(options.limit, 10),
+        );
+
+        if (results.length === 0) {
+          console.log(`\n  No prompts matching "${query}".\n`);
+          return;
+        }
+
+        console.log(
+          `\n  \x1b[1m── Search: "${query}" (${results.length} results) ──\x1b[0m\n`,
+        );
+        for (const prompt of results) {
+          console.log(
+            `  \x1b[1m${prompt.name}\x1b[0m \x1b[90m(${prompt.usageCount} uses)\x1b[0m`,
+          );
+          const preview = prompt.content
+            .replace(/\n/g, " ")
+            .slice(0, 60)
+            .trim();
+          console.log(
+            `    ${preview}${prompt.content.length > 60 ? "..." : ""}`,
+          );
+          console.log();
+        }
+      });
+
+    promptsCmd
+      .command("show")
+      .description("Show a prompt by ID")
+      .argument("<id>", "Prompt ID")
+      .action((id: string) => {
+        const db = getPromptDb();
+        const prompt = db.getById(id);
+
+        if (!prompt) {
+          console.error(`\x1b[31mError:\x1b[0m Prompt not found: ${id}`);
+          process.exit(1);
+        }
+
+        console.log(`\n  \x1b[1m${prompt.name}\x1b[0m`);
+        if (prompt.tags.length > 0) {
+          console.log(`  Tags: ${prompt.tags.join(", ")}`);
+        }
+        if (prompt.variables.length > 0) {
+          console.log(
+            `  Variables: ${prompt.variables.map((v) => `{{${v}}}`).join(", ")}`,
+          );
+        }
+        console.log(
+          `  Shared: ${prompt.isShared ? "yes" : "no"} | Uses: ${prompt.usageCount}`,
+        );
+        console.log(`\n${prompt.content}\n`);
       });
   },
 };
