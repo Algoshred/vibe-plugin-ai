@@ -1,6 +1,6 @@
 import type { Command } from "commander";
-import { existsSync, mkdirSync, writeFileSync } from "fs";
-import { join } from "path";
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
 
 /**
  * @burdenoff/vibe-plugin-ai v2.0.0
@@ -131,7 +131,13 @@ function runInstallCommand(command: string): boolean {
 }
 
 function findConfigFiles(tool: AiTool, directory: string): string[] {
-  return tool.configFiles.filter((f) => existsSync(join(directory, f)));
+  return tool.configFiles.filter((f) => {
+    try {
+      return Bun.file(join(directory, f)).size > 0;
+    } catch {
+      return false;
+    }
+  });
 }
 
 // ── Plugin Export ────────────────────────────────────────────────────────────
@@ -234,7 +240,7 @@ export const vibePlugin: VibePlugin = {
       .description("Initialize AI tool config in the current project")
       .argument("<tool>", "Tool name")
       .option("--cwd <dir>", "Project directory", process.cwd())
-      .action((toolName: string, options: { cwd: string }) => {
+      .action(async (toolName: string, options: { cwd: string }) => {
         const tool = AI_TOOLS.find((t) => t.name === toolName);
         if (!tool) {
           console.error(
@@ -247,11 +253,15 @@ export const vibePlugin: VibePlugin = {
         const primaryConfig = tool.configFiles[0];
         const configPath = join(dir, primaryConfig);
 
-        if (existsSync(configPath)) {
-          console.log(
-            `  \x1b[33m⚠\x1b[0m  ${primaryConfig} already exists in ${dir}`,
-          );
-          return;
+        try {
+          if (Bun.file(configPath).size >= 0) {
+            console.log(
+              `  \x1b[33m⚠\x1b[0m  ${primaryConfig} already exists in ${dir}`,
+            );
+            return;
+          }
+        } catch {
+          // File doesn't exist — proceed to create it.
         }
 
         // Create parent directory if needed (e.g. .claude/)
@@ -262,7 +272,7 @@ export const vibePlugin: VibePlugin = {
         }
 
         const content = generateStarterConfig(tool);
-        writeFileSync(configPath, content);
+        await Bun.write(configPath, content);
         console.log(
           `\n  \x1b[32m✓ Created ${primaryConfig}\x1b[0m in ${dir}\n`,
         );
