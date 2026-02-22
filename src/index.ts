@@ -35,6 +35,9 @@ export interface VibePlugin {
   name: string;
   version: string;
   description: string;
+  tags?: Array<
+    "backend" | "frontend" | "cli" | "provider" | "adapter" | "integration"
+  >;
   cliCommand: string;
   onCliSetup: (program: Command, hostServices?: HostServices) => void;
 }
@@ -137,6 +140,7 @@ export const vibePlugin: VibePlugin = {
   name: "ai",
   version: "2.0.0",
   description: "AI tool management and integration",
+  tags: ["cli", "integration"],
   cliCommand: "ai",
 
   onCliSetup(program: Command, _hostServices?: HostServices) {
