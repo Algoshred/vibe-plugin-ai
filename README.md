@@ -1,6 +1,6 @@
 # @burdenoff/vibe-plugin-ai
 
-AI tool management plugin for [VibeControls Agent](https://www.npmjs.com/package/@burdenoff/vibe-agent).
+AI tool management plugin for [VibeControls Agent](https://www.npmjs.com/package/@vibecontrols/agent).
 
 ## Installation
 
