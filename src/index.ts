@@ -350,6 +350,10 @@ export const vibePlugin: VibePlugin = {
           dispatchDb: getDispatchDb(),
           promptDb: getPromptDb(),
           contextDb: getContextDb(),
+          sessionDb: getSessionDb(),
+          logDb: getLogDb(),
+          queueDb: getQueueDb(),
+          getAIProvider,
         }),
       )
       // Queue management

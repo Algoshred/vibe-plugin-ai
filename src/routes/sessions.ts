@@ -100,6 +100,7 @@ export function createSessionRoutes(deps: SessionRouteDeps) {
               ...body.config,
               name: body.name,
               agentType: body.agentType,
+              providerConfig: { ...body.config?.providerConfig, sessionId: session.id },
             });
           }
           sessionDb.update(session.id, { status: "active" });
@@ -146,6 +147,7 @@ export function createSessionRoutes(deps: SessionRouteDeps) {
             prompt: string,
             context?: unknown[],
           ) => Promise<unknown>;
+          createSession?: (config: Record<string, unknown>) => Promise<unknown>;
         } | undefined;
 
         if (!provider?.sendPrompt) {
@@ -163,12 +165,44 @@ export function createSessionRoutes(deps: SessionRouteDeps) {
           tokenCount: body.prompt.length, // approximate, provider will give exact
         });
 
+        // Helper: ensure provider session exists (re-create if lost after restart)
+        const ensureProviderSession = async () => {
+          if (provider.createSession) {
+            try {
+              await provider.createSession({
+                ...session.config,
+                name: session.name,
+                agentType: session.agentType,
+                providerConfig: { ...(session.config?.providerConfig as Record<string, unknown> || {}), sessionId: params.id },
+              });
+            } catch {
+              // Already exists or creation failed — proceed anyway
+            }
+          }
+        };
+
         try {
-          const response = await provider.sendPrompt(
-            params.id,
-            body.prompt,
-            body.contexts,
-          );
+          let response: unknown;
+          try {
+            response = await provider.sendPrompt(
+              params.id,
+              body.prompt,
+              body.contexts,
+            );
+          } catch (firstErr) {
+            // If session not found in provider (lost after restart), re-create and retry
+            const errMsg = firstErr instanceof Error ? firstErr.message : "";
+            if (errMsg.includes("not found") || errMsg.includes("Not found")) {
+              await ensureProviderSession();
+              response = await provider.sendPrompt(
+                params.id,
+                body.prompt,
+                body.contexts,
+              );
+            } else {
+              throw firstErr;
+            }
+          }
 
           sessionDb.update(params.id, { status: "active" });
 

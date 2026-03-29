@@ -2,7 +2,7 @@
  * Prompt Dispatch REST API Routes
  *
  * Compose prompts from templates + variables + contexts,
- * then dispatch to AI sessions.
+ * then dispatch to AI sessions (sync or queued).
  * Mounted at /api/ai/dispatch by the plugin system.
  */
 
@@ -13,15 +13,92 @@ import type {
 } from "../db/dispatched-prompts.js";
 import type { PromptDatabase } from "../db/prompts.js";
 import type { ContextDatabase } from "../db/contexts.js";
+import type { SessionDatabase } from "../db/sessions.js";
+import type { LogDatabase } from "../db/logs.js";
+import type { QueueDatabase } from "../db/queue.js";
 
 export interface DispatchRouteDeps {
   dispatchDb: DispatchedPromptDatabase;
   promptDb: PromptDatabase;
   contextDb: ContextDatabase;
+  sessionDb: SessionDatabase;
+  logDb: LogDatabase;
+  queueDb: QueueDatabase;
+  getAIProvider: (agentType: string) => unknown | undefined;
 }
 
 export function createDispatchRoutes(deps: DispatchRouteDeps) {
-  const { dispatchDb, promptDb, contextDb } = deps;
+  const { dispatchDb, promptDb, contextDb, sessionDb, logDb, queueDb, getAIProvider } = deps;
+
+  /**
+   * Helper: send a prompt to a session synchronously via the provider.
+   * Used for immediate (non-scheduled) dispatches.
+   */
+  async function sendToSession(
+    dispatchId: string,
+    content: string,
+    sessionId: string,
+  ): Promise<{ success: boolean; response?: unknown; error?: string }> {
+    const session = sessionDb.getById(sessionId);
+    if (!session) return { success: false, error: "Session not found" };
+    if (session.status === "terminated") return { success: false, error: "Session is terminated" };
+
+    const provider = getAIProvider(session.agentType) as {
+      sendPrompt?: (sid: string, prompt: string) => Promise<unknown>;
+      createSession?: (config: Record<string, unknown>) => Promise<unknown>;
+    } | undefined;
+
+    if (!provider?.sendPrompt) {
+      return { success: false, error: `Provider '${session.agentType}' not available` };
+    }
+
+    dispatchDb.update(dispatchId, { status: "processing" });
+    sessionDb.update(sessionId, { status: "processing" });
+
+    logDb.append({ sessionId, type: "input", content });
+
+    try {
+      let response: unknown;
+      try {
+        response = await provider.sendPrompt(sessionId, content);
+      } catch (firstErr) {
+        // Re-create provider session if lost after restart
+        const msg = firstErr instanceof Error ? firstErr.message : "";
+        if (msg.includes("not found") && provider.createSession) {
+          await provider.createSession({
+            ...session.config,
+            name: session.name,
+            agentType: session.agentType,
+            providerConfig: { ...(session.config?.providerConfig as Record<string, unknown> || {}), sessionId },
+          });
+          response = await provider.sendPrompt(sessionId, content);
+        } else {
+          throw firstErr;
+        }
+      }
+
+      const resp = response as Record<string, unknown>;
+      logDb.append({
+        sessionId,
+        type: "output",
+        content: typeof resp.content === "string" ? resp.content : JSON.stringify(resp),
+        tokenCount: (resp.outputTokens as number) || undefined,
+        model: (resp.model as string) || undefined,
+        durationMs: (resp.durationMs as number) || undefined,
+      });
+
+      dispatchDb.update(dispatchId, { status: "completed", result: resp });
+      sessionDb.update(sessionId, { status: "active" });
+
+      return { success: true, response };
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : "Unknown error";
+      logDb.append({ sessionId, type: "error", content: errorMsg });
+      dispatchDb.update(dispatchId, { status: "failed" });
+      sessionDb.update(sessionId, { status: "error" });
+      return { success: false, error: errorMsg };
+    }
+  }
 
   return new Elysia({ prefix: "/dispatch" })
     // ── POST /dispatch/compose — Compose and preview a prompt ─────────
@@ -31,17 +108,12 @@ export function createDispatchRoutes(deps: DispatchRouteDeps) {
         let content: string;
 
         if (body.templateId) {
-          // Render from template
-          const rendered = promptDb.renderById(
-            body.templateId,
-            body.variables || {},
-          );
+          const rendered = promptDb.renderById(body.templateId, body.variables || {});
           if (rendered === null) {
             set.status = 404;
             return { error: "Template not found" };
           }
           content = rendered;
-          // Increment template usage
           promptDb.use(body.templateId);
         } else if (body.content) {
           content = body.content;
@@ -50,7 +122,6 @@ export function createDispatchRoutes(deps: DispatchRouteDeps) {
           return { error: "Either templateId or content is required" };
         }
 
-        // Attach contexts
         let contextContents: string[] = [];
         if (body.contextIds && body.contextIds.length > 0) {
           const contexts = contextDb.getMultiple(body.contextIds);
@@ -64,7 +135,6 @@ export function createDispatchRoutes(deps: DispatchRouteDeps) {
             ? `${content}\n\n${contextContents.join("\n\n")}`
             : content;
 
-        // Create draft dispatch record
         const dispatch = dispatchDb.create({
           templateId: body.templateId,
           content: fullContent,
@@ -73,10 +143,7 @@ export function createDispatchRoutes(deps: DispatchRouteDeps) {
           sessionId: body.sessionId,
         });
 
-        return {
-          dispatch,
-          preview: fullContent,
-        };
+        return { dispatch, preview: fullContent };
       },
       {
         body: t.Object({
@@ -89,59 +156,81 @@ export function createDispatchRoutes(deps: DispatchRouteDeps) {
       },
     )
 
-    // ── POST /dispatch/send — Dispatch a composed prompt ──────────────
+    // ── POST /dispatch/send — Dispatch a prompt (sync or scheduled) ───
     .post(
       "/send",
-      ({ body, set }) => {
+      async ({ body, set }) => {
+        let dispatchRecord;
+        let sessionId: string;
+
         if (body.dispatchId) {
-          // Send existing dispatch
-          const dispatch = dispatchDb.getById(body.dispatchId);
-          if (!dispatch) {
+          dispatchRecord = dispatchDb.getById(body.dispatchId);
+          if (!dispatchRecord) {
             set.status = 404;
             return { error: "Dispatch record not found" };
           }
-
-          const sessionId = body.sessionId || dispatch.sessionId;
+          sessionId = (body.sessionId || dispatchRecord.sessionId) as string;
           if (!sessionId) {
             set.status = 400;
             return { error: "sessionId is required" };
           }
-
-          dispatchDb.update(body.dispatchId, {
-            status: "queued",
+          dispatchDb.update(body.dispatchId, { sessionId });
+        } else {
+          // Direct send
+          if (!body.content) {
+            set.status = 400;
+            return { error: "Either dispatchId or content is required" };
+          }
+          sessionId = body.sessionId as string;
+          if (!sessionId) {
+            set.status = 400;
+            return { error: "sessionId is required for direct send" };
+          }
+          dispatchRecord = dispatchDb.create({
+            content: body.content,
+            contextIds: body.contextIds || [],
             sessionId,
+            scheduledAt: body.scheduledAt,
           });
+        }
 
+        // If scheduled for the future, enqueue and return
+        if (body.scheduledAt && new Date(body.scheduledAt) > new Date()) {
+          dispatchDb.update(dispatchRecord.id, { status: "queued" });
+          queueDb.enqueue({
+            dispatchedPromptId: dispatchRecord.id,
+            sessionId,
+            scheduledAt: body.scheduledAt,
+          });
           return {
             status: "queued",
-            dispatchId: body.dispatchId,
+            dispatchId: dispatchRecord.id,
             sessionId,
           };
         }
 
-        // Direct send (compose + queue in one step)
-        if (!body.content) {
-          set.status = 400;
-          return { error: "Either dispatchId or content is required" };
-        }
-        if (!body.sessionId) {
-          set.status = 400;
-          return { error: "sessionId is required for direct send" };
-        }
+        // Immediate dispatch — send synchronously
+        const result = await sendToSession(
+          dispatchRecord.id,
+          dispatchRecord.content,
+          sessionId,
+        );
 
-        const dispatch = dispatchDb.create({
-          content: body.content,
-          contextIds: body.contextIds || [],
-          sessionId: body.sessionId,
-          scheduledAt: body.scheduledAt,
-        });
-
-        dispatchDb.update(dispatch.id, { status: "queued" });
+        if (!result.success) {
+          set.status = 500;
+          return {
+            status: "failed",
+            dispatchId: dispatchRecord.id,
+            sessionId,
+            error: result.error,
+          };
+        }
 
         return {
-          status: "queued",
-          dispatchId: dispatch.id,
-          sessionId: body.sessionId,
+          status: "completed",
+          dispatchId: dispatchRecord.id,
+          sessionId,
+          response: result.response,
         };
       },
       {
