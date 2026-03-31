@@ -6,7 +6,7 @@
  * Mounted at /api/ai/descriptor by the plugin system.
  */
 
-import { Elysia } from "elysia";
+import { Elysia, t } from "elysia";
 
 interface EndpointDescriptor {
   method: string;
@@ -97,5 +97,13 @@ export function createApiDescriptorRoutes() {
       }
 
       return { curl };
+    }, {
+      body: t.Object({
+        method: t.String(),
+        path: t.String(),
+        baseUrl: t.Optional(t.String()),
+        headers: t.Optional(t.Record(t.String(), t.String())),
+        body: t.Optional(t.Any()),
+      }),
     });
 }

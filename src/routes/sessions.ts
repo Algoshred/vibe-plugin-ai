@@ -100,7 +100,7 @@ export function createSessionRoutes(deps: SessionRouteDeps) {
               ...body.config,
               name: body.name,
               agentType: body.agentType,
-              providerConfig: { ...body.config?.providerConfig, sessionId: session.id },
+              providerConfig: { ...(body.config as Record<string, any>)?.providerConfig, sessionId: session.id },
             });
           }
           sessionDb.update(session.id, { status: "active" });

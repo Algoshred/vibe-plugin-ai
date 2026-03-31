@@ -634,7 +634,7 @@ export const vibePlugin: VibePlugin = {
       .action((options: { type?: string; limit: string }) => {
         const db = getContextDb();
         const result = db.list(
-          options.type ? { type: options.type as Parameters<typeof db.list>[0] extends { type?: infer T } ? T : undefined } : undefined,
+          options.type ? { type: options.type as any } : undefined,
           { limit: parseInt(options.limit, 10) },
         );
         if (result.items.length === 0) {
@@ -677,7 +677,7 @@ export const vibePlugin: VibePlugin = {
       .action((options: { status?: string }) => {
         const db = getSessionDb();
         const result = db.list(
-          options.status ? { status: options.status as Parameters<typeof db.list>[0] extends { status?: infer S } ? S : undefined } : undefined,
+          options.status ? { status: options.status as any } : undefined,
         );
         if (result.items.length === 0) {
           console.log("\n  No sessions found.\n");
