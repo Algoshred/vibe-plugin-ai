@@ -12,7 +12,12 @@ import { existsSync, mkdirSync } from "node:fs";
 
 // ── Types ───────────────────────────────────────────────────────────────
 
-export type QueueStatus = "pending" | "processing" | "completed" | "failed" | "cancelled";
+export type QueueStatus =
+  | "pending"
+  | "processing"
+  | "completed"
+  | "failed"
+  | "cancelled";
 
 export interface QueueItem {
   id: string;

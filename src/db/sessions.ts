@@ -145,7 +145,7 @@ export class SessionDatabase {
   }
 
   list(
-    filter?: { agentType?: string; status?: SessionStatus },
+    filter?: { agentType?: string; status?: SessionStatus; search?: string },
     pagination?: { limit?: number; offset?: number },
   ): { items: AISessionRecord[]; total: number; hasMore: boolean } {
     const conditions: string[] = [];
@@ -158,6 +158,10 @@ export class SessionDatabase {
     if (filter?.status) {
       conditions.push("status = ?");
       params.push(filter.status);
+    }
+    if (filter?.search) {
+      conditions.push("name LIKE ?");
+      params.push(`%${filter.search}%`);
     }
 
     const whereClause =

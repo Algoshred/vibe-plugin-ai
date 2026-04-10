@@ -35,7 +35,10 @@ export class QueueProcessor {
   start(intervalMs = 5000): void {
     if (this.intervalId) return;
 
-    this.deps.logger?.info("queue-processor", `Started (polling every ${intervalMs}ms)`);
+    this.deps.logger?.info(
+      "queue-processor",
+      `Started (polling every ${intervalMs}ms)`,
+    );
 
     this.intervalId = setInterval(async () => {
       if (this.processing) return;
@@ -103,13 +106,15 @@ export class QueueProcessor {
       return;
     }
 
-    const provider = this.deps.getAIProvider(session.agentType) as {
-      sendPrompt?: (
-        sessionId: string,
-        prompt: string,
-        context?: unknown[],
-      ) => Promise<unknown>;
-    } | undefined;
+    const provider = this.deps.getAIProvider(session.agentType) as
+      | {
+          sendPrompt?: (
+            sessionId: string,
+            prompt: string,
+            context?: unknown[],
+          ) => Promise<unknown>;
+        }
+      | undefined;
 
     if (!provider?.sendPrompt) {
       this.deps.queueDb.markFailed(
@@ -131,10 +136,7 @@ export class QueueProcessor {
     });
 
     try {
-      const response = await provider.sendPrompt(
-        session.id,
-        dispatch.content,
-      );
+      const response = await provider.sendPrompt(session.id, dispatch.content);
 
       // Log output
       const resp = response as Record<string, unknown>;

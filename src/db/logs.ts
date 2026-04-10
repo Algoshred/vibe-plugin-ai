@@ -149,7 +149,10 @@ export class LogDatabase {
     return row ? this.rowToLog(row) : null;
   }
 
-  getBySession(sessionId: string, filter?: LogFilter): {
+  getBySession(
+    sessionId: string,
+    filter?: LogFilter,
+  ): {
     items: AILogRecord[];
     total: number;
     hasMore: boolean;

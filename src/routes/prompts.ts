@@ -23,10 +23,10 @@ const PromptCategoryEnum = t.Optional(
 
 export function createPromptRoutes(promptDb: PromptDatabase) {
   return (
-    new Elysia({ prefix: "/prompts" })
+    new Elysia()
       // ── GET /prompts — List prompts ──────────────────────────────────
       .get(
-        "/",
+        "/prompts",
         ({ query }) => {
           const filter: {
             category?: PromptCategory;
@@ -72,7 +72,7 @@ export function createPromptRoutes(promptDb: PromptDatabase) {
 
       // ── GET /prompts/search — Search prompts ─────────────────────────
       .get(
-        "/search",
+        "/prompts/search",
         ({ query }) => {
           const results = promptDb.search(
             query.q,
@@ -92,7 +92,7 @@ export function createPromptRoutes(promptDb: PromptDatabase) {
 
       // ── GET /prompts/popular — Popular prompts ───────────────────────
       .get(
-        "/popular",
+        "/prompts/popular",
         ({ query }) => {
           const results = promptDb.getPopular(
             query.limit ? parseInt(query.limit, 10) : undefined,
@@ -108,7 +108,7 @@ export function createPromptRoutes(promptDb: PromptDatabase) {
 
       // ── GET /prompts/:id — Get single prompt ─────────────────────────
       .get(
-        "/:id",
+        "/prompts/:id",
         ({ params, set }) => {
           const prompt = promptDb.getById(params.id);
           if (!prompt) {
@@ -124,7 +124,7 @@ export function createPromptRoutes(promptDb: PromptDatabase) {
 
       // ── POST /prompts — Create prompt ────────────────────────────────
       .post(
-        "/",
+        "/prompts",
         ({ body, set }) => {
           try {
             const prompt = promptDb.create(body);
@@ -153,7 +153,7 @@ export function createPromptRoutes(promptDb: PromptDatabase) {
 
       // ── PUT /prompts/:id — Update prompt ─────────────────────────────
       .put(
-        "/:id",
+        "/prompts/:id",
         ({ params, body, set }) => {
           const updated = promptDb.update(params.id, body);
           if (!updated) {
@@ -190,7 +190,7 @@ export function createPromptRoutes(promptDb: PromptDatabase) {
 
       // ── DELETE /prompts/:id — Soft-delete prompt ─────────────────────
       .delete(
-        "/:id",
+        "/prompts/:id",
         ({ params, set }) => {
           const deleted = promptDb.delete(params.id);
           if (!deleted) {
@@ -206,7 +206,7 @@ export function createPromptRoutes(promptDb: PromptDatabase) {
 
       // ── POST /prompts/:id/use — Increment usage ─────────────────────
       .post(
-        "/:id/use",
+        "/prompts/:id/use",
         ({ params, set }) => {
           const prompt = promptDb.use(params.id);
           if (!prompt) {
@@ -222,7 +222,7 @@ export function createPromptRoutes(promptDb: PromptDatabase) {
 
       // ── POST /prompts/:id/duplicate — Duplicate prompt ───────────────
       .post(
-        "/:id/duplicate",
+        "/prompts/:id/duplicate",
         ({ params, body, set }) => {
           try {
             const prompt = promptDb.duplicate(params.id, body.name);
@@ -252,7 +252,7 @@ export function createPromptRoutes(promptDb: PromptDatabase) {
 
       // ── POST /prompts/:id/render — Render with variables ─────────────
       .post(
-        "/:id/render",
+        "/prompts/:id/render",
         ({ params, body, set }) => {
           const rendered = promptDb.renderById(params.id, body.variables);
           if (rendered === null) {

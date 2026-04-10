@@ -193,7 +193,10 @@ export class DispatchedPromptDatabase {
     };
   }
 
-  update(id: string, input: UpdateDispatchInput): DispatchedPromptRecord | null {
+  update(
+    id: string,
+    input: UpdateDispatchInput,
+  ): DispatchedPromptRecord | null {
     const existing = this.getById(id);
     if (!existing) return null;
 
@@ -216,9 +219,7 @@ export class DispatchedPromptDatabase {
 
     params.push(id);
     this.db
-      .prepare(
-        `UPDATE dispatched_prompts SET ${sets.join(", ")} WHERE id = ?`,
-      )
+      .prepare(`UPDATE dispatched_prompts SET ${sets.join(", ")} WHERE id = ?`)
       .run(...params);
 
     return this.getById(id);

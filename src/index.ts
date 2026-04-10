@@ -6,6 +6,7 @@ import { SessionDatabase } from "./db/sessions.js";
 import { LogDatabase } from "./db/logs.js";
 import { DispatchedPromptDatabase } from "./db/dispatched-prompts.js";
 import { QueueDatabase } from "./db/queue.js";
+import { FileDatabase } from "./db/files.js";
 import { createPromptRoutes } from "./routes/prompts.js";
 import { createContextRoutes } from "./routes/contexts.js";
 import { createSessionRoutes } from "./routes/sessions.js";
@@ -13,6 +14,13 @@ import { createDispatchRoutes } from "./routes/dispatch.js";
 import { createQueueRoutes } from "./routes/queue.js";
 import { createStatsRoutes } from "./routes/stats.js";
 import { createApiDescriptorRoutes } from "./routes/api-descriptor.js";
+import { createStreamRoutes } from "./routes/stream.js";
+import { createFileRoutes } from "./routes/files.js";
+import { createModelRoutes } from "./routes/models.js";
+import { createCancelRoutes } from "./routes/cancel.js";
+import { createMcpRoutes } from "./routes/mcp.js";
+import { createSearchRoutes } from "./routes/search.js";
+import { createExportRoutes } from "./routes/export.js";
 import { QueueProcessor } from "./services/queue-processor.js";
 
 /**
@@ -116,6 +124,8 @@ export type {
 } from "./db/dispatched-prompts.js";
 
 export type { QueueItem, QueueStatus } from "./db/queue.js";
+
+export type { AIFileRecord, CreateFileInput } from "./db/files.js";
 
 // ── Tool Definitions ─────────────────────────────────────────────────────
 
@@ -236,6 +246,7 @@ let sessionDb: SessionDatabase | null = null;
 let logDb: LogDatabase | null = null;
 let dispatchDb: DispatchedPromptDatabase | null = null;
 let queueDb: QueueDatabase | null = null;
+let fileDb: FileDatabase | null = null;
 let queueProcessor: QueueProcessor | null = null;
 let hostServicesRef: HostServices | null = null;
 
@@ -267,6 +278,11 @@ function getDispatchDb(): DispatchedPromptDatabase {
 function getQueueDb(): QueueDatabase {
   if (!queueDb) queueDb = new QueueDatabase();
   return queueDb;
+}
+
+function getFileDb(): FileDatabase {
+  if (!fileDb) fileDb = new FileDatabase();
+  return fileDb;
 }
 
 function getAIProvider(agentType: string): unknown | undefined {
@@ -313,55 +329,86 @@ export const vibePlugin: VibePlugin = {
   apiPrefix: "/api/ai",
 
   createRoutes() {
-    return new Elysia()
-      // Tool detection
-      .get("/tools", () => ({
-        tools: AI_TOOLS.map((tool) => {
-          const { installed, version } = isToolInstalled(tool);
-          const configs = findConfigFiles(tool, process.cwd());
-          return {
-            name: tool.name,
-            displayName: tool.displayName,
-            description: tool.description,
-            installed,
-            version: installed ? version.split("\n")[0] : "",
-            configFiles: tool.configFiles,
-            foundConfigs: configs,
-            installCommand: tool.installCommand,
-          };
-        }),
-      }))
-      // Prompt templates
-      .use(createPromptRoutes(getPromptDb()))
-      // Context management
-      .use(createContextRoutes(getContextDb()))
-      // AI sessions
-      .use(
-        createSessionRoutes({
-          sessionDb: getSessionDb(),
-          logDb: getLogDb(),
-          getAIProvider,
-          listAIProviders,
-        }),
-      )
-      // Prompt dispatch
-      .use(
-        createDispatchRoutes({
-          dispatchDb: getDispatchDb(),
-          promptDb: getPromptDb(),
-          contextDb: getContextDb(),
-          sessionDb: getSessionDb(),
-          logDb: getLogDb(),
-          queueDb: getQueueDb(),
-          getAIProvider,
-        }),
-      )
-      // Queue management
-      .use(createQueueRoutes(getQueueDb()))
-      // Stats
-      .use(createStatsRoutes(getSessionDb(), getLogDb()))
-      // API descriptor
-      .use(createApiDescriptorRoutes());
+    // Build all sub-routes first, then compose into a single Elysia
+    // NOTE: We use Elysia.mount() pattern instead of .use() chaining
+    // because deeply nested .use() breaks route resolution in some
+    // Elysia versions when the parent router also uses .use() nesting.
+    const app = new Elysia();
+
+    // Tool detection (inline)
+    app.get("/tools", () => ({
+      tools: AI_TOOLS.map((tool) => {
+        const { installed, version } = isToolInstalled(tool);
+        const configs = findConfigFiles(tool, process.cwd());
+        return {
+          name: tool.name,
+          displayName: tool.displayName,
+          description: tool.description,
+          installed,
+          version: installed ? version.split("\n")[0] : "",
+          configFiles: tool.configFiles,
+          foundConfigs: configs,
+          installCommand: tool.installCommand,
+        };
+      }),
+    }));
+
+    // Mount sub-route modules
+    const subRoutes = [
+      createSessionRoutes({
+        sessionDb: getSessionDb(),
+        logDb: getLogDb(),
+        getAIProvider,
+        listAIProviders,
+      }),
+      createDispatchRoutes({
+        dispatchDb: getDispatchDb(),
+        promptDb: getPromptDb(),
+        contextDb: getContextDb(),
+        sessionDb: getSessionDb(),
+        logDb: getLogDb(),
+        queueDb: getQueueDb(),
+        getAIProvider,
+      }),
+      createPromptRoutes(getPromptDb()),
+      createContextRoutes(getContextDb()),
+      createStreamRoutes({
+        sessionDb: getSessionDb(),
+        logDb: getLogDb(),
+        getAIProvider,
+      }),
+      createFileRoutes({
+        sessionDb: getSessionDb(),
+        fileDb: getFileDb(),
+      }),
+      createCancelRoutes({
+        sessionDb: getSessionDb(),
+        getAIProvider,
+      }),
+      createExportRoutes({
+        sessionDb: getSessionDb(),
+        logDb: getLogDb(),
+      }),
+      createModelRoutes({
+        getAIProvider,
+        listAIProviders,
+      }),
+      createMcpRoutes({
+        sessionDb: getSessionDb(),
+      }),
+      createSearchRoutes({
+        logDb: getLogDb(),
+      }),
+      createQueueRoutes(getQueueDb()),
+      createStatsRoutes(getSessionDb(), getLogDb()),
+      createApiDescriptorRoutes(),
+    ];
+
+    for (const subRoute of subRoutes) {
+      app.use(subRoute);
+    }
+
+    return app;
   },
 
   onServerStart(_app, hostServices) {
@@ -374,6 +421,7 @@ export const vibePlugin: VibePlugin = {
     getLogDb();
     getDispatchDb();
     getQueueDb();
+    getFileDb();
 
     // Register log ingester service for provider plugins
     if (hostServices?.serviceRegistry) {
@@ -437,6 +485,10 @@ export const vibePlugin: VibePlugin = {
       queueDb.close();
       queueDb = null;
     }
+    if (fileDb) {
+      fileDb.close();
+      fileDb = null;
+    }
 
     hostServicesRef = null;
   },
@@ -452,17 +504,27 @@ export const vibePlugin: VibePlugin = {
     aiCmd
       .command("list")
       .description("List all supported AI tools and their status")
-      .option("--cwd <dir>", "Project directory to check configs", process.cwd())
+      .option(
+        "--cwd <dir>",
+        "Project directory to check configs",
+        process.cwd(),
+      )
       .action((options: { cwd: string }) => {
         console.log("\n  \x1b[1m── AI Tools ──\x1b[0m\n");
         for (const tool of AI_TOOLS) {
           const { installed, version } = isToolInstalled(tool);
           const icon = installed ? "\x1b[32m✓\x1b[0m" : "\x1b[31m✗\x1b[0m";
           const versionStr = installed ? ` (${version.split("\n")[0]})` : "";
-          console.log(`  ${icon} \x1b[1m${tool.displayName}\x1b[0m${versionStr}`);
+          console.log(
+            `  ${icon} \x1b[1m${tool.displayName}\x1b[0m${versionStr}`,
+          );
           console.log(`    ${tool.description}`);
           const configs = findConfigFiles(tool, options.cwd);
-          console.log(configs.length > 0 ? `    Config: ${configs.join(", ")}` : "    Config: (none found)");
+          console.log(
+            configs.length > 0
+              ? `    Config: ${configs.join(", ")}`
+              : "    Config: (none found)",
+          );
           console.log();
         }
       });
@@ -471,28 +533,41 @@ export const vibePlugin: VibePlugin = {
     aiCmd
       .command("install")
       .description("Install an AI tool")
-      .argument("<tool>", `Tool name (${AI_TOOLS.map((t) => t.name).join(", ")})`)
+      .argument(
+        "<tool>",
+        `Tool name (${AI_TOOLS.map((t) => t.name).join(", ")})`,
+      )
       .action((toolName: string) => {
         const tool = AI_TOOLS.find((t) => t.name === toolName);
         if (!tool) {
-          console.error(`\x1b[31mError:\x1b[0m Unknown tool '${toolName}'. Available: ${AI_TOOLS.map((t) => t.name).join(", ")}`);
+          console.error(
+            `\x1b[31mError:\x1b[0m Unknown tool '${toolName}'. Available: ${AI_TOOLS.map((t) => t.name).join(", ")}`,
+          );
           process.exit(1);
         }
         if (!tool.installCommand) {
-          console.error(`\x1b[31mError:\x1b[0m '${tool.displayName}' must be installed manually.`);
+          console.error(
+            `\x1b[31mError:\x1b[0m '${tool.displayName}' must be installed manually.`,
+          );
           process.exit(1);
         }
         const { installed } = isToolInstalled(tool);
         if (installed) {
-          console.log(`  \x1b[32m✓ ${tool.displayName} is already installed.\x1b[0m`);
+          console.log(
+            `  \x1b[32m✓ ${tool.displayName} is already installed.\x1b[0m`,
+          );
           return;
         }
         console.log(`  Installing ${tool.displayName}...`);
         const success = runInstallCommand(tool.installCommand);
         if (success) {
-          console.log(`\n  \x1b[32m✓ ${tool.displayName} installed successfully.\x1b[0m\n`);
+          console.log(
+            `\n  \x1b[32m✓ ${tool.displayName} installed successfully.\x1b[0m\n`,
+          );
         } else {
-          console.error(`\n  \x1b[31m✗ Failed to install ${tool.displayName}.\x1b[0m`);
+          console.error(
+            `\n  \x1b[31m✗ Failed to install ${tool.displayName}.\x1b[0m`,
+          );
           console.error(`  Try manually: ${tool.installCommand}\n`);
           process.exit(1);
         }
@@ -515,7 +590,9 @@ export const vibePlugin: VibePlugin = {
         const configPath = join(dir, primaryConfig);
         try {
           if (Bun.file(configPath).size >= 0) {
-            console.log(`  \x1b[33m⚠\x1b[0m  ${primaryConfig} already exists in ${dir}`);
+            console.log(
+              `  \x1b[33m⚠\x1b[0m  ${primaryConfig} already exists in ${dir}`,
+            );
             return;
           }
         } catch {
@@ -528,7 +605,9 @@ export const vibePlugin: VibePlugin = {
         }
         const content = generateStarterConfig(tool);
         await Bun.write(configPath, content);
-        console.log(`\n  \x1b[32m✓ Created ${primaryConfig}\x1b[0m in ${dir}\n`);
+        console.log(
+          `\n  \x1b[32m✓ Created ${primaryConfig}\x1b[0m in ${dir}\n`,
+        );
       });
 
     // ── vibe ai check ───────────────────────────────────────────────
@@ -541,17 +620,23 @@ export const vibePlugin: VibePlugin = {
         for (const tool of AI_TOOLS) {
           const { installed, version } = isToolInstalled(tool);
           const icon = installed ? "\x1b[32m✓\x1b[0m" : "\x1b[31m✗\x1b[0m";
-          console.log(`  ${icon} ${tool.displayName.padEnd(20)} ${installed ? version.split("\n")[0] : "not installed"}`);
+          console.log(
+            `  ${icon} ${tool.displayName.padEnd(20)} ${installed ? version.split("\n")[0] : "not installed"}`,
+          );
           if (!installed) allInstalled = false;
         }
         console.log();
         if (!allInstalled) {
-          console.log("  Install missing tools: \x1b[1mvibe ai install <tool>\x1b[0m\n");
+          console.log(
+            "  Install missing tools: \x1b[1mvibe ai install <tool>\x1b[0m\n",
+          );
         }
       });
 
     // ── vibe ai prompts ─────────────────────────────────────────────
-    const promptsCmd = aiCmd.command("prompts").description("Manage prompt templates");
+    const promptsCmd = aiCmd
+      .command("prompts")
+      .description("Manage prompt templates");
 
     promptsCmd
       .command("list")
@@ -559,30 +644,50 @@ export const vibePlugin: VibePlugin = {
       .option("--shared", "Show only shared prompts")
       .option("--category <cat>", "Filter by category")
       .option("--limit <n>", "Max results", "20")
-      .action((options: { shared?: boolean; category?: string; limit: string }) => {
-        const db = getPromptDb();
-        const result = db.list(
-          {
-            isShared: options.shared !== undefined ? options.shared : undefined,
-            category: options.category as Parameters<typeof db.list>[0] extends { category?: infer C } ? C : undefined,
-          },
-          { limit: parseInt(options.limit, 10) },
-        );
-        if (result.items.length === 0) {
-          console.log("\n  No prompts found.\n");
-          return;
-        }
-        console.log(`\n  \x1b[1m── Prompts (${result.total}) ──\x1b[0m\n`);
-        for (const prompt of result.items) {
-          const shared = prompt.isShared ? " \x1b[36m[shared]\x1b[0m" : "";
-          const tags = prompt.tags.length > 0 ? ` \x1b[33m[${prompt.tags.join(", ")}]\x1b[0m` : "";
-          const uses = prompt.usageCount > 0 ? ` \x1b[90m(${prompt.usageCount} uses)\x1b[0m` : "";
-          console.log(`  \x1b[1m${prompt.name}\x1b[0m${shared}${tags}${uses}`);
-          const preview = prompt.content.replace(/\n/g, " ").slice(0, 60).trim();
-          console.log(`    ${preview}${prompt.content.length > 60 ? "..." : ""}`);
-          console.log();
-        }
-      });
+      .action(
+        (options: { shared?: boolean; category?: string; limit: string }) => {
+          const db = getPromptDb();
+          const result = db.list(
+            {
+              isShared:
+                options.shared !== undefined ? options.shared : undefined,
+              category: options.category as Parameters<
+                typeof db.list
+              >[0] extends { category?: infer C }
+                ? C
+                : undefined,
+            },
+            { limit: parseInt(options.limit, 10) },
+          );
+          if (result.items.length === 0) {
+            console.log("\n  No prompts found.\n");
+            return;
+          }
+          console.log(`\n  \x1b[1m── Prompts (${result.total}) ──\x1b[0m\n`);
+          for (const prompt of result.items) {
+            const shared = prompt.isShared ? " \x1b[36m[shared]\x1b[0m" : "";
+            const tags =
+              prompt.tags.length > 0
+                ? ` \x1b[33m[${prompt.tags.join(", ")}]\x1b[0m`
+                : "";
+            const uses =
+              prompt.usageCount > 0
+                ? ` \x1b[90m(${prompt.usageCount} uses)\x1b[0m`
+                : "";
+            console.log(
+              `  \x1b[1m${prompt.name}\x1b[0m${shared}${tags}${uses}`,
+            );
+            const preview = prompt.content
+              .replace(/\n/g, " ")
+              .slice(0, 60)
+              .trim();
+            console.log(
+              `    ${preview}${prompt.content.length > 60 ? "..." : ""}`,
+            );
+            console.log();
+          }
+        },
+      );
 
     promptsCmd
       .command("search")
@@ -591,16 +696,29 @@ export const vibePlugin: VibePlugin = {
       .option("--limit <n>", "Max results", "10")
       .action((query: string, options: { limit: string }) => {
         const db = getPromptDb();
-        const results = db.search(query, undefined, parseInt(options.limit, 10));
+        const results = db.search(
+          query,
+          undefined,
+          parseInt(options.limit, 10),
+        );
         if (results.length === 0) {
           console.log(`\n  No prompts matching "${query}".\n`);
           return;
         }
-        console.log(`\n  \x1b[1m── Search: "${query}" (${results.length} results) ──\x1b[0m\n`);
+        console.log(
+          `\n  \x1b[1m── Search: "${query}" (${results.length} results) ──\x1b[0m\n`,
+        );
         for (const prompt of results) {
-          console.log(`  \x1b[1m${prompt.name}\x1b[0m \x1b[90m(${prompt.usageCount} uses)\x1b[0m`);
-          const preview = prompt.content.replace(/\n/g, " ").slice(0, 60).trim();
-          console.log(`    ${preview}${prompt.content.length > 60 ? "..." : ""}`);
+          console.log(
+            `  \x1b[1m${prompt.name}\x1b[0m \x1b[90m(${prompt.usageCount} uses)\x1b[0m`,
+          );
+          const preview = prompt.content
+            .replace(/\n/g, " ")
+            .slice(0, 60)
+            .trim();
+          console.log(
+            `    ${preview}${prompt.content.length > 60 ? "..." : ""}`,
+          );
           console.log();
         }
       });
@@ -617,14 +735,22 @@ export const vibePlugin: VibePlugin = {
           process.exit(1);
         }
         console.log(`\n  \x1b[1m${prompt.name}\x1b[0m`);
-        if (prompt.tags.length > 0) console.log(`  Tags: ${prompt.tags.join(", ")}`);
-        if (prompt.variables.length > 0) console.log(`  Variables: ${prompt.variables.map((v) => `{{${v}}}`).join(", ")}`);
-        console.log(`  Shared: ${prompt.isShared ? "yes" : "no"} | Uses: ${prompt.usageCount}`);
+        if (prompt.tags.length > 0)
+          console.log(`  Tags: ${prompt.tags.join(", ")}`);
+        if (prompt.variables.length > 0)
+          console.log(
+            `  Variables: ${prompt.variables.map((v) => `{{${v}}}`).join(", ")}`,
+          );
+        console.log(
+          `  Shared: ${prompt.isShared ? "yes" : "no"} | Uses: ${prompt.usageCount}`,
+        );
         console.log(`\n${prompt.content}\n`);
       });
 
     // ── vibe ai contexts ────────────────────────────────────────────
-    const contextsCmd = aiCmd.command("contexts").description("Manage reusable context pieces");
+    const contextsCmd = aiCmd
+      .command("contexts")
+      .description("Manage reusable context pieces");
 
     contextsCmd
       .command("list")
@@ -643,8 +769,13 @@ export const vibePlugin: VibePlugin = {
         }
         console.log(`\n  \x1b[1m── Contexts (${result.total}) ──\x1b[0m\n`);
         for (const ctx of result.items) {
-          const tags = ctx.tags.length > 0 ? ` \x1b[33m[${ctx.tags.join(", ")}]\x1b[0m` : "";
-          console.log(`  \x1b[1m${ctx.name}\x1b[0m \x1b[90m(${ctx.type})\x1b[0m${tags}`);
+          const tags =
+            ctx.tags.length > 0
+              ? ` \x1b[33m[${ctx.tags.join(", ")}]\x1b[0m`
+              : "";
+          console.log(
+            `  \x1b[1m${ctx.name}\x1b[0m \x1b[90m(${ctx.type})\x1b[0m${tags}`,
+          );
           const preview = ctx.content.replace(/\n/g, " ").slice(0, 60).trim();
           console.log(`    ${preview}${ctx.content.length > 60 ? "..." : ""}`);
           console.log();
@@ -662,13 +793,17 @@ export const vibePlugin: VibePlugin = {
           console.error(`\x1b[31mError:\x1b[0m Context not found: ${id}`);
           process.exit(1);
         }
-        console.log(`\n  \x1b[1m${ctx.name}\x1b[0m \x1b[90m(${ctx.type})\x1b[0m`);
+        console.log(
+          `\n  \x1b[1m${ctx.name}\x1b[0m \x1b[90m(${ctx.type})\x1b[0m`,
+        );
         if (ctx.tags.length > 0) console.log(`  Tags: ${ctx.tags.join(", ")}`);
         console.log(`\n${ctx.content}\n`);
       });
 
     // ── vibe ai sessions ────────────────────────────────────────────
-    const sessionsCmd = aiCmd.command("sessions").description("Manage AI sessions");
+    const sessionsCmd = aiCmd
+      .command("sessions")
+      .description("Manage AI sessions");
 
     sessionsCmd
       .command("list")
@@ -685,8 +820,15 @@ export const vibePlugin: VibePlugin = {
         }
         console.log(`\n  \x1b[1m── AI Sessions (${result.total}) ──\x1b[0m\n`);
         for (const session of result.items) {
-          const statusColor = session.status === "active" ? "\x1b[32m" : session.status === "error" ? "\x1b[31m" : "\x1b[33m";
-          console.log(`  \x1b[1m${session.name}\x1b[0m ${statusColor}[${session.status}]\x1b[0m \x1b[90m(${session.agentType})\x1b[0m`);
+          const statusColor =
+            session.status === "active"
+              ? "\x1b[32m"
+              : session.status === "error"
+                ? "\x1b[31m"
+                : "\x1b[33m";
+          console.log(
+            `  \x1b[1m${session.name}\x1b[0m ${statusColor}[${session.status}]\x1b[0m \x1b[90m(${session.agentType})\x1b[0m`,
+          );
           console.log(`    ID: ${session.id} | Created: ${session.createdAt}`);
           console.log();
         }
@@ -711,7 +853,9 @@ export const vibePlugin: VibePlugin = {
 
         console.log("\n  \x1b[1m── AI Usage Stats ──\x1b[0m\n");
         console.log(`  Sessions:      ${sessions.total}`);
-        console.log(`  Active:        ${sessions.items.filter((s) => s.status !== "terminated").length}`);
+        console.log(
+          `  Active:        ${sessions.items.filter((s) => s.status !== "terminated").length}`,
+        );
         console.log(`  Input tokens:  ${totalInput.toLocaleString()}`);
         console.log(`  Output tokens: ${totalOutput.toLocaleString()}`);
         console.log();
