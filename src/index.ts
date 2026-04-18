@@ -48,6 +48,8 @@ import { QueueProcessor } from "./services/queue-processor.js";
 
 // ── Plugin Interfaces ────────────────────────────────────────────────────
 
+import type { StorageProvider } from "./db/storage-provider-types.js";
+
 export interface HostServices {
   logger?: {
     info: (source: string, msg: string) => void;
@@ -56,6 +58,7 @@ export interface HostServices {
     debug: (source: string, msg: string) => void;
   };
   config?: Record<string, unknown>;
+  storage?: StorageProvider;
   serviceRegistry?: {
     registerService: (
       pluginName: string,
@@ -250,39 +253,35 @@ let fileDb: FileDatabase | null = null;
 let queueProcessor: QueueProcessor | null = null;
 let hostServicesRef: HostServices | null = null;
 
+function requireDb<T extends object | null>(db: T, name: string): NonNullable<T> {
+  if (!db) {
+    throw new Error(
+      `AI plugin: ${name} accessed before onServerStart hydrated storage`,
+    );
+  }
+  return db as NonNullable<T>;
+}
+
 function getPromptDb(): PromptDatabase {
-  if (!promptDb) promptDb = new PromptDatabase();
-  return promptDb;
+  return requireDb(promptDb, "PromptDatabase");
 }
-
 function getContextDb(): ContextDatabase {
-  if (!contextDb) contextDb = new ContextDatabase();
-  return contextDb;
+  return requireDb(contextDb, "ContextDatabase");
 }
-
 function getSessionDb(): SessionDatabase {
-  if (!sessionDb) sessionDb = new SessionDatabase();
-  return sessionDb;
+  return requireDb(sessionDb, "SessionDatabase");
 }
-
 function getLogDb(): LogDatabase {
-  if (!logDb) logDb = new LogDatabase();
-  return logDb;
+  return requireDb(logDb, "LogDatabase");
 }
-
 function getDispatchDb(): DispatchedPromptDatabase {
-  if (!dispatchDb) dispatchDb = new DispatchedPromptDatabase();
-  return dispatchDb;
+  return requireDb(dispatchDb, "DispatchedPromptDatabase");
 }
-
 function getQueueDb(): QueueDatabase {
-  if (!queueDb) queueDb = new QueueDatabase();
-  return queueDb;
+  return requireDb(queueDb, "QueueDatabase");
 }
-
 function getFileDb(): FileDatabase {
-  if (!fileDb) fileDb = new FileDatabase();
-  return fileDb;
+  return requireDb(fileDb, "FileDatabase");
 }
 
 function getAIProvider(agentType: string): unknown | undefined {
@@ -328,11 +327,33 @@ export const vibePlugin: VibePlugin = {
   cliCommand: "ai",
   apiPrefix: "/api/ai",
 
-  createRoutes() {
+  createRoutes(deps?: { hostServices?: HostServices }) {
     // Build all sub-routes first, then compose into a single Elysia
     // NOTE: We use Elysia.mount() pattern instead of .use() chaining
     // because deeply nested .use() breaks route resolution in some
     // Elysia versions when the parent router also uses .use() nesting.
+    //
+    // Storage provider comes from the agent's PluginRouteDeps
+    // (passed by plugin-router.ts). DBs are instantiated here with
+    // an empty cache — hydration happens async in onServerStart.
+    const storage = deps?.hostServices?.storage;
+    if (!storage) {
+      throw new Error(
+        "vibe-plugin-ai: hostServices.storage is required but missing — " +
+          "the agent must pass a StorageProvider via PluginRouteDeps.",
+      );
+    }
+    hostServicesRef = deps?.hostServices || null;
+    const kvLogger = deps?.hostServices?.logger;
+
+    promptDb = new PromptDatabase(storage, kvLogger);
+    contextDb = new ContextDatabase(storage, kvLogger);
+    sessionDb = new SessionDatabase(storage, kvLogger);
+    logDb = new LogDatabase(storage, kvLogger);
+    dispatchDb = new DispatchedPromptDatabase(storage, kvLogger);
+    queueDb = new QueueDatabase(storage, kvLogger);
+    fileDb = new FileDatabase(storage, kvLogger);
+
     const app = new Elysia();
 
     // Tool detection (inline)
@@ -411,17 +432,46 @@ export const vibePlugin: VibePlugin = {
     return app;
   },
 
-  onServerStart(_app, hostServices) {
+  async onServerStart(_app, hostServices) {
     hostServicesRef = hostServices || null;
 
-    // Initialize all databases
-    getPromptDb();
-    getContextDb();
-    getSessionDb();
-    getLogDb();
-    getDispatchDb();
-    getQueueDb();
-    getFileDb();
+    // Hydrate all KV tables from the agent's encrypted storage
+    // before handling any requests. DBs were constructed in
+    // createRoutes; here we warm the in-memory cache.
+    if (promptDb && contextDb && sessionDb && logDb && dispatchDb && queueDb && fileDb) {
+      await Promise.all([
+        promptDb.hydrate(),
+        contextDb.hydrate(),
+        sessionDb.hydrate(),
+        logDb.hydrate(),
+        dispatchDb.hydrate(),
+        queueDb.hydrate(),
+        fileDb.hydrate(),
+      ]);
+
+      // One-shot legacy SQLite → KV import. Safe no-op if no .db
+      // files exist in the data dir.
+      try {
+        const { importLegacySqlite } = await import("./db/sqlite-import.js");
+        await importLegacySqlite(
+          {
+            sessions: sessionDb.store,
+            contexts: contextDb.store,
+            prompts: promptDb.store,
+            logs: logDb.store,
+            dispatched: dispatchDb.store,
+            queue: queueDb.store,
+            files: fileDb.store,
+          },
+          hostServices?.logger,
+        );
+      } catch (err) {
+        hostServices?.logger?.warn(
+          "ai-plugin",
+          `Legacy SQLite import skipped: ${String(err)}`,
+        );
+      }
+    }
 
     // Register log ingester service for provider plugins
     if (hostServices?.serviceRegistry) {
@@ -434,7 +484,7 @@ export const vibePlugin: VibePlugin = {
 
     hostServices?.logger?.info(
       "ai-plugin",
-      "AI orchestration hub started — all databases initialized",
+      "AI orchestration hub started — all databases hydrated",
     );
   },
 

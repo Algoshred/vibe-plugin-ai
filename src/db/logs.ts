@@ -1,14 +1,14 @@
 /**
- * AI Logs SQLite Database
+ * AI Logs — KV-backed per-session log store.
  *
- * Per-session log storage for AI interactions. Tracks input, output,
- * thinking steps, events, errors, and metadata from AI agent providers.
+ * Tracks input, output, thinking steps, events, errors, and metadata
+ * from AI agent providers. Each log record is keyed by its UUID under
+ * the `ai:logs` namespace.
  */
 
-import { Database } from "bun:sqlite";
-import { join } from "node:path";
-import os from "node:os";
-import { existsSync, mkdirSync } from "node:fs";
+import { KVStore, query } from "./kv-store.js";
+import type { KVLogger } from "./kv-store.js";
+import type { StorageProvider } from "./storage-provider-types.js";
 
 // ── Types ───────────────────────────────────────────────────────────────
 
@@ -51,152 +51,59 @@ export interface LogFilter {
   offset?: number;
 }
 
-// ── Database Row ────────────────────────────────────────────────────────
-
-interface LogRow {
-  id: string;
-  session_id: string;
-  type: string;
-  content: string;
-  token_count: number | null;
-  model: string | null;
-  duration_ms: number | null;
-  agent_metadata: string;
-  created_at: string;
-}
-
-// ── LogDatabase ─────────────────────────────────────────────────────────
+const NAMESPACE = "ai:logs";
 
 export class LogDatabase {
-  private db: Database;
+  readonly store: KVStore<AILogRecord>;
 
-  constructor(dbPath?: string) {
-    const dir = join(os.homedir(), ".vibecontrols");
-    if (!existsSync(dir)) {
-      mkdirSync(dir, { recursive: true });
-    }
-
-    const path = dbPath || join(dir, "ai-logs.db");
-    this.db = new Database(path);
-    this.db.exec("PRAGMA journal_mode = WAL");
-    this.db.exec("PRAGMA busy_timeout = 5000");
-    this.db.exec("PRAGMA synchronous = NORMAL");
-    this.initializeSchema();
+  constructor(storage: StorageProvider, logger?: KVLogger) {
+    this.store = new KVStore(storage, NAMESPACE, "id", logger);
   }
 
-  private initializeSchema(): void {
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS ai_logs (
-        id TEXT PRIMARY KEY,
-        session_id TEXT NOT NULL,
-        type TEXT NOT NULL CHECK(type IN ('input','output','thinking','event','error','metadata')),
-        content TEXT NOT NULL,
-        token_count INTEGER,
-        model TEXT,
-        duration_ms INTEGER,
-        agent_metadata TEXT DEFAULT '{}',
-        created_at TEXT DEFAULT (datetime('now'))
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_logs_session_id ON ai_logs(session_id);
-      CREATE INDEX IF NOT EXISTS idx_logs_type ON ai_logs(type);
-      CREATE INDEX IF NOT EXISTS idx_logs_created_at ON ai_logs(created_at);
-    `);
-  }
-
-  private rowToLog(row: LogRow): AILogRecord {
-    return {
-      id: row.id,
-      sessionId: row.session_id,
-      type: row.type as LogType,
-      content: row.content,
-      tokenCount: row.token_count,
-      model: row.model,
-      durationMs: row.duration_ms,
-      agentMetadata: JSON.parse(row.agent_metadata || "{}"),
-      createdAt: row.created_at,
-    };
+  async hydrate(): Promise<void> {
+    await this.store.hydrate();
   }
 
   append(input: CreateLogInput): AILogRecord {
     const id = crypto.randomUUID();
-    const now = new Date().toISOString();
-
-    this.db
-      .prepare(
-        `INSERT INTO ai_logs (id, session_id, type, content, token_count, model, duration_ms, agent_metadata, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        id,
-        input.sessionId,
-        input.type,
-        input.content,
-        input.tokenCount ?? null,
-        input.model ?? null,
-        input.durationMs ?? null,
-        JSON.stringify(input.agentMetadata || {}),
-        now,
-      );
-
-    return this.getById(id)!;
+    const rec: AILogRecord = {
+      id,
+      sessionId: input.sessionId,
+      type: input.type,
+      content: input.content,
+      tokenCount: input.tokenCount ?? null,
+      model: input.model ?? null,
+      durationMs: input.durationMs ?? null,
+      agentMetadata: input.agentMetadata || {},
+      createdAt: new Date().toISOString(),
+    };
+    this.store.put(rec);
+    return rec;
   }
 
   getById(id: string): AILogRecord | null {
-    const row = this.db
-      .prepare("SELECT * FROM ai_logs WHERE id = ?")
-      .get(id) as LogRow | null;
-    return row ? this.rowToLog(row) : null;
+    return this.store.get(id);
   }
 
   getBySession(
     sessionId: string,
     filter?: LogFilter,
-  ): {
-    items: AILogRecord[];
-    total: number;
-    hasMore: boolean;
-  } {
-    const conditions: string[] = ["session_id = ?"];
-    const params: (string | number)[] = [sessionId];
-
-    if (filter?.types && filter.types.length > 0) {
-      const placeholders = filter.types.map(() => "?").join(",");
-      conditions.push(`type IN (${placeholders})`);
-      params.push(...filter.types);
-    }
-    if (filter?.startDate) {
-      conditions.push("created_at >= ?");
-      params.push(filter.startDate);
-    }
-    if (filter?.endDate) {
-      conditions.push("created_at <= ?");
-      params.push(filter.endDate);
-    }
-    if (filter?.search) {
-      conditions.push("LOWER(content) LIKE ?");
-      params.push(`%${filter.search.toLowerCase()}%`);
-    }
-
-    const whereClause = conditions.join(" AND ");
-    const limit = filter?.limit || 100;
-    const offset = filter?.offset || 0;
-
-    const countRow = this.db
-      .prepare(`SELECT COUNT(*) as count FROM ai_logs WHERE ${whereClause}`)
-      .get(...params) as { count: number };
-
-    const rows = this.db
-      .prepare(
-        `SELECT * FROM ai_logs WHERE ${whereClause} ORDER BY created_at ASC LIMIT ? OFFSET ?`,
-      )
-      .all(...params, limit, offset) as LogRow[];
-
-    return {
-      items: rows.map((r) => this.rowToLog(r)),
-      total: countRow.count,
-      hasMore: offset + rows.length < countRow.count,
-    };
+  ): { items: AILogRecord[]; total: number; hasMore: boolean } {
+    const types = filter?.types;
+    const needle = filter?.search?.toLowerCase();
+    return query(this.store.all(), {
+      filter: (r) => {
+        if (r.sessionId !== sessionId) return false;
+        if (types && types.length > 0 && !types.includes(r.type)) return false;
+        if (filter?.startDate && r.createdAt < filter.startDate) return false;
+        if (filter?.endDate && r.createdAt > filter.endDate) return false;
+        if (needle && !r.content.toLowerCase().includes(needle)) return false;
+        return true;
+      },
+      sort: (a, b) => a.createdAt.localeCompare(b.createdAt),
+      limit: filter?.limit ?? 100,
+      offset: filter?.offset ?? 0,
+    });
   }
 
   getSessionStats(sessionId: string): {
@@ -206,50 +113,33 @@ export class LogDatabase {
     totalDurationMs: number;
     logsByType: Record<string, number>;
   } {
-    const totalRow = this.db
-      .prepare(
-        `SELECT
-        COUNT(*) as total_logs,
-        COALESCE(SUM(CASE WHEN type = 'input' THEN token_count ELSE 0 END), 0) as total_input_tokens,
-        COALESCE(SUM(CASE WHEN type = 'output' THEN token_count ELSE 0 END), 0) as total_output_tokens,
-        COALESCE(SUM(duration_ms), 0) as total_duration_ms
-       FROM ai_logs WHERE session_id = ?`,
-      )
-      .get(sessionId) as {
-      total_logs: number;
-      total_input_tokens: number;
-      total_output_tokens: number;
-      total_duration_ms: number;
-    };
-
-    const typeRows = this.db
-      .prepare(
-        "SELECT type, COUNT(*) as count FROM ai_logs WHERE session_id = ? GROUP BY type",
-      )
-      .all(sessionId) as { type: string; count: number }[];
-
+    let totalInput = 0;
+    let totalOutput = 0;
+    let totalDuration = 0;
+    let totalLogs = 0;
     const logsByType: Record<string, number> = {};
-    for (const row of typeRows) {
-      logsByType[row.type] = row.count;
+    for (const r of this.store.all()) {
+      if (r.sessionId !== sessionId) continue;
+      totalLogs++;
+      logsByType[r.type] = (logsByType[r.type] || 0) + 1;
+      if (r.type === "input") totalInput += r.tokenCount ?? 0;
+      if (r.type === "output") totalOutput += r.tokenCount ?? 0;
+      totalDuration += r.durationMs ?? 0;
     }
-
     return {
-      totalLogs: totalRow.total_logs,
-      totalInputTokens: totalRow.total_input_tokens,
-      totalOutputTokens: totalRow.total_output_tokens,
-      totalDurationMs: totalRow.total_duration_ms,
+      totalLogs,
+      totalInputTokens: totalInput,
+      totalOutputTokens: totalOutput,
+      totalDurationMs: totalDuration,
       logsByType,
     };
   }
 
   deleteBySession(sessionId: string): number {
-    const result = this.db
-      .prepare("DELETE FROM ai_logs WHERE session_id = ?")
-      .run(sessionId);
-    return result.changes;
+    return this.store.deleteWhere((r) => r.sessionId === sessionId);
   }
 
   close(): void {
-    this.db.close();
+    /* no-op */
   }
 }

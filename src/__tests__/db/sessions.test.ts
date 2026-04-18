@@ -5,12 +5,14 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { SessionDatabase } from '../../db/sessions.js';
+import { createMockStorage } from '../helpers/mock-storage.js';
 
 describe('SessionDatabase', () => {
   let db: SessionDatabase;
 
-  beforeEach(() => {
-    db = new SessionDatabase(':memory:');
+  beforeEach(async () => {
+    db = new SessionDatabase(createMockStorage());
+    await db.hydrate();
   });
 
   afterEach(() => {

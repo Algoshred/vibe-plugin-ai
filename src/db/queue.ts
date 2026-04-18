@@ -1,14 +1,13 @@
 /**
- * Prompt Queue SQLite Database
+ * Prompt Queue — KV-backed priority queue.
  *
  * Priority-based queue for prompt dispatch. Supports immediate,
  * scheduled, and event-triggered execution.
  */
 
-import { Database } from "bun:sqlite";
-import { join } from "node:path";
-import os from "node:os";
-import { existsSync, mkdirSync } from "node:fs";
+import { KVStore, query } from "./kv-store.js";
+import type { KVLogger } from "./kv-store.js";
+import type { StorageProvider } from "./storage-provider-types.js";
 
 // ── Types ───────────────────────────────────────────────────────────────
 
@@ -41,201 +40,128 @@ export interface EnqueueInput {
   maxAttempts?: number;
 }
 
-// ── Database Row ────────────────────────────────────────────────────────
-
-interface QueueRow {
-  id: string;
-  dispatched_prompt_id: string;
-  session_id: string;
-  priority: number;
-  scheduled_at: string | null;
-  status: string;
-  attempts: number;
-  max_attempts: number;
-  last_error: string | null;
-  created_at: string;
-  updated_at: string;
-}
-
-// ── QueueDatabase ───────────────────────────────────────────────────────
+const NAMESPACE = "ai:queue";
 
 export class QueueDatabase {
-  private db: Database;
+  readonly store: KVStore<QueueItem>;
 
-  constructor(dbPath?: string) {
-    const dir = join(os.homedir(), ".vibecontrols");
-    if (!existsSync(dir)) {
-      mkdirSync(dir, { recursive: true });
-    }
-
-    const path = dbPath || join(dir, "ai-queue.db");
-    this.db = new Database(path);
-    this.db.exec("PRAGMA journal_mode = WAL");
-    this.db.exec("PRAGMA busy_timeout = 5000");
-    this.db.exec("PRAGMA synchronous = NORMAL");
-    this.initializeSchema();
+  constructor(storage: StorageProvider, logger?: KVLogger) {
+    this.store = new KVStore(storage, NAMESPACE, "id", logger);
   }
 
-  private initializeSchema(): void {
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS prompt_queue (
-        id TEXT PRIMARY KEY,
-        dispatched_prompt_id TEXT NOT NULL,
-        session_id TEXT NOT NULL,
-        priority INTEGER DEFAULT 0,
-        scheduled_at TEXT,
-        status TEXT DEFAULT 'pending' CHECK(status IN ('pending','processing','completed','failed','cancelled')),
-        attempts INTEGER DEFAULT 0,
-        max_attempts INTEGER DEFAULT 3,
-        last_error TEXT,
-        created_at TEXT DEFAULT (datetime('now')),
-        updated_at TEXT DEFAULT (datetime('now'))
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_queue_status ON prompt_queue(status);
-      CREATE INDEX IF NOT EXISTS idx_queue_priority ON prompt_queue(priority DESC);
-      CREATE INDEX IF NOT EXISTS idx_queue_scheduled ON prompt_queue(scheduled_at);
-    `);
-  }
-
-  private rowToItem(row: QueueRow): QueueItem {
-    return {
-      id: row.id,
-      dispatchedPromptId: row.dispatched_prompt_id,
-      sessionId: row.session_id,
-      priority: row.priority,
-      scheduledAt: row.scheduled_at,
-      status: row.status as QueueStatus,
-      attempts: row.attempts,
-      maxAttempts: row.max_attempts,
-      lastError: row.last_error,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-    };
+  async hydrate(): Promise<void> {
+    await this.store.hydrate();
   }
 
   enqueue(input: EnqueueInput): QueueItem {
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
-
-    this.db
-      .prepare(
-        `INSERT INTO prompt_queue (id, dispatched_prompt_id, session_id, priority, scheduled_at, max_attempts, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        id,
-        input.dispatchedPromptId,
-        input.sessionId,
-        input.priority ?? 0,
-        input.scheduledAt ?? null,
-        input.maxAttempts ?? 3,
-        now,
-        now,
-      );
-
-    return this.getById(id)!;
+    const rec: QueueItem = {
+      id,
+      dispatchedPromptId: input.dispatchedPromptId,
+      sessionId: input.sessionId,
+      priority: input.priority ?? 0,
+      scheduledAt: input.scheduledAt ?? null,
+      status: "pending",
+      attempts: 0,
+      maxAttempts: input.maxAttempts ?? 3,
+      lastError: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.store.put(rec);
+    return rec;
   }
 
   getById(id: string): QueueItem | null {
-    const row = this.db
-      .prepare("SELECT * FROM prompt_queue WHERE id = ?")
-      .get(id) as QueueRow | null;
-    return row ? this.rowToItem(row) : null;
+    return this.store.get(id);
   }
 
   list(
     filter?: { status?: QueueStatus },
     pagination?: { limit?: number; offset?: number },
   ): { items: QueueItem[]; total: number; hasMore: boolean } {
-    const conditions: string[] = [];
-    const params: (string | number)[] = [];
-
-    if (filter?.status) {
-      conditions.push("status = ?");
-      params.push(filter.status);
-    }
-
-    const whereClause =
-      conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
-    const limit = pagination?.limit || 50;
-    const offset = pagination?.offset || 0;
-
-    const countRow = this.db
-      .prepare(`SELECT COUNT(*) as count FROM prompt_queue ${whereClause}`)
-      .get(...params) as { count: number };
-
-    const rows = this.db
-      .prepare(
-        `SELECT * FROM prompt_queue ${whereClause} ORDER BY priority DESC, created_at ASC LIMIT ? OFFSET ?`,
-      )
-      .all(...params, limit, offset) as QueueRow[];
-
-    return {
-      items: rows.map((r) => this.rowToItem(r)),
-      total: countRow.count,
-      hasMore: offset + rows.length < countRow.count,
-    };
+    return query(this.store.all(), {
+      filter: (r) => !filter?.status || r.status === filter.status,
+      sort: (a, b) =>
+        b.priority - a.priority || a.createdAt.localeCompare(b.createdAt),
+      limit: pagination?.limit ?? 50,
+      offset: pagination?.offset ?? 0,
+    });
   }
 
   /** Get next batch of items ready for processing */
   getReady(limit?: number): QueueItem[] {
     const now = new Date().toISOString();
-    const rows = this.db
-      .prepare(
-        `SELECT * FROM prompt_queue
-       WHERE status = 'pending' AND (scheduled_at IS NULL OR scheduled_at <= ?) AND attempts < max_attempts
-       ORDER BY priority DESC, created_at ASC LIMIT ?`,
+    return this.store
+      .all()
+      .filter(
+        (r) =>
+          r.status === "pending" &&
+          (r.scheduledAt === null || r.scheduledAt <= now) &&
+          r.attempts < r.maxAttempts,
       )
-      .all(now, limit || 5) as QueueRow[];
-    return rows.map((r) => this.rowToItem(r));
+      .sort(
+        (a, b) =>
+          b.priority - a.priority || a.createdAt.localeCompare(b.createdAt),
+      )
+      .slice(0, limit ?? 5);
   }
 
   markProcessing(id: string): boolean {
-    const now = new Date().toISOString();
-    const result = this.db
-      .prepare(
-        "UPDATE prompt_queue SET status = 'processing', attempts = attempts + 1, updated_at = ? WHERE id = ? AND status = 'pending'",
-      )
-      .run(now, id);
-    return result.changes > 0;
+    const existing = this.store.get(id);
+    if (!existing || existing.status !== "pending") return false;
+    this.store.put({
+      ...existing,
+      status: "processing",
+      attempts: existing.attempts + 1,
+      updatedAt: new Date().toISOString(),
+    });
+    return true;
   }
 
   markCompleted(id: string): boolean {
-    const now = new Date().toISOString();
-    const result = this.db
-      .prepare(
-        "UPDATE prompt_queue SET status = 'completed', updated_at = ? WHERE id = ?",
-      )
-      .run(now, id);
-    return result.changes > 0;
+    const existing = this.store.get(id);
+    if (!existing) return false;
+    this.store.put({
+      ...existing,
+      status: "completed",
+      updatedAt: new Date().toISOString(),
+    });
+    return true;
   }
 
   markFailed(id: string, error: string): boolean {
-    const now = new Date().toISOString();
-    const item = this.getById(id);
-    if (!item) return false;
-
-    const newStatus = item.attempts >= item.maxAttempts ? "failed" : "pending";
-    const result = this.db
-      .prepare(
-        "UPDATE prompt_queue SET status = ?, last_error = ?, updated_at = ? WHERE id = ?",
-      )
-      .run(newStatus, error, now, id);
-    return result.changes > 0;
+    const existing = this.store.get(id);
+    if (!existing) return false;
+    const newStatus: QueueStatus =
+      existing.attempts >= existing.maxAttempts ? "failed" : "pending";
+    this.store.put({
+      ...existing,
+      status: newStatus,
+      lastError: error,
+      updatedAt: new Date().toISOString(),
+    });
+    return true;
   }
 
   cancel(id: string): boolean {
-    const now = new Date().toISOString();
-    const result = this.db
-      .prepare(
-        "UPDATE prompt_queue SET status = 'cancelled', updated_at = ? WHERE id = ? AND status IN ('pending','processing')",
-      )
-      .run(now, id);
-    return result.changes > 0;
+    const existing = this.store.get(id);
+    if (
+      !existing ||
+      (existing.status !== "pending" && existing.status !== "processing")
+    ) {
+      return false;
+    }
+    this.store.put({
+      ...existing,
+      status: "cancelled",
+      updatedAt: new Date().toISOString(),
+    });
+    return true;
   }
 
   close(): void {
-    this.db.close();
+    /* no-op */
   }
 }

@@ -5,12 +5,14 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { LogDatabase } from '../../db/logs.js';
+import { createMockStorage } from '../helpers/mock-storage.js';
 
 describe('LogDatabase', () => {
   let db: LogDatabase;
 
-  beforeEach(() => {
-    db = new LogDatabase(':memory:');
+  beforeEach(async () => {
+    db = new LogDatabase(createMockStorage());
+    await db.hydrate();
   });
 
   afterEach(() => {

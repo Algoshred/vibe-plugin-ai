@@ -11,6 +11,7 @@ import { join } from "node:path";
 import os from "node:os";
 import { readFileSync } from "node:fs";
 import type { SessionDatabase } from "../db/sessions.js";
+import { getDataDir } from "../db/data-dir.js";
 
 export interface McpRouteDeps {
   sessionDb: SessionDatabase;
@@ -41,7 +42,7 @@ interface McpConfigFile {
 
 function loadMcpConfig(): McpServerConfig[] {
   const configPaths = [
-    join(os.homedir(), ".vibecontrols", "mcp-config.json"),
+    join(getDataDir(), "mcp-config.json"),
     join(os.homedir(), ".config", "mcp", "config.json"),
   ];
 
