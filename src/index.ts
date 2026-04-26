@@ -449,28 +449,8 @@ export const vibePlugin: VibePlugin = {
         fileDb.hydrate(),
       ]);
 
-      // One-shot legacy SQLite → KV import. Safe no-op if no .db
-      // files exist in the data dir.
-      try {
-        const { importLegacySqlite } = await import("./db/sqlite-import.js");
-        await importLegacySqlite(
-          {
-            sessions: sessionDb.store,
-            contexts: contextDb.store,
-            prompts: promptDb.store,
-            logs: logDb.store,
-            dispatched: dispatchDb.store,
-            queue: queueDb.store,
-            files: fileDb.store,
-          },
-          hostServices?.logger,
-        );
-      } catch (err) {
-        hostServices?.logger?.warn(
-          "ai-plugin",
-          `Legacy SQLite import skipped: ${String(err)}`,
-        );
-      }
+      // Legacy local database import is intentionally disabled. AI plugin
+      // state must flow through the agent storage provider backed by Skalex.
     }
 
     // Register log ingester service for provider plugins

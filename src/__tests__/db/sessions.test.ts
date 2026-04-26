@@ -1,7 +1,7 @@
 /**
  * SessionDatabase Tests
  *
- * Tests for the AI Sessions SQLite database (in-memory).
+ * Tests for the AI Sessions store (in-memory).
  */
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { SessionDatabase } from '../../db/sessions.js';

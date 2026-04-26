@@ -1,7 +1,7 @@
 /**
  * LogDatabase Tests
  *
- * Tests for the AI Logs SQLite database (in-memory).
+ * Tests for the AI Logs store (in-memory).
  */
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { LogDatabase } from '../../db/logs.js';
