@@ -91,6 +91,8 @@ export interface VibePlugin {
 
 // ── Re-exports ───────────────────────────────────────────────────────────
 
+export type * from "./provider.js";
+
 export type {
   Prompt,
   PromptCategory,
