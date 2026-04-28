@@ -167,6 +167,26 @@ export interface AIUsageStats {
 
 export type ProviderMode = "sdk" | "cli";
 
+export interface AIProviderModeMetadata {
+  /** Modes this provider can execute for real requests. */
+  supportedModes: ProviderMode[];
+  /** Modes intentionally unavailable for this provider. */
+  unsupportedModes: ProviderMode[];
+  /** Current mode selected by the provider's auto-detection or explicit override. */
+  currentMode: ProviderMode;
+  /** Mode the UI should select when creating new sessions. */
+  defaultMode: ProviderMode;
+}
+
+export interface AIProviderDescriptor extends AIProviderModeMetadata {
+  /** Provider registry key, e.g. "claude". */
+  name: string;
+  /** Human-readable provider label. */
+  displayName: string;
+  /** Standard prereq endpoint prefix, if the provider exposes one. */
+  prereqApiPrefix?: string;
+}
+
 export interface AIModelInfo {
   /** Model identifier (e.g., "claude-sonnet-4-20250514") */
   id: string;
@@ -346,6 +366,21 @@ export interface AIAgentProvider {
    * Optional — defaults to "cli" if not implemented.
    */
   getMode?(): ProviderMode;
+
+  /**
+   * Modes this provider actually supports. Optional — defaults to current mode.
+   */
+  getSupportedModes?(): ProviderMode[];
+
+  /**
+   * Display label used by provider selectors.
+   */
+  getDisplayName?(): string;
+
+  /**
+   * Standard prereq endpoint prefix for this provider plugin.
+   */
+  getPrereqApiPrefix?(): string;
 
   /**
    * Set the execution mode (sdk or cli).

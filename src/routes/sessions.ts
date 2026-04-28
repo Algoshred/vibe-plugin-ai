@@ -9,12 +9,36 @@
 import { Elysia, t } from "elysia";
 import type { SessionDatabase, SessionStatus } from "../db/sessions.js";
 import type { LogDatabase } from "../db/logs.js";
+import type { ProviderMode } from "../provider.js";
+
+interface AIProviderSummary {
+  pluginName: string;
+  isDefault: boolean;
+  supportedModes?: ProviderMode[];
+}
+
+interface ModeAwareProvider {
+  setMode?: (mode: ProviderMode) => void;
+  getSupportedModes?: () => ProviderMode[];
+}
+
+function isProviderMode(mode: unknown): mode is ProviderMode {
+  return mode === "sdk" || mode === "cli";
+}
+
+function providerSupportsMode(
+  provider: ModeAwareProvider,
+  mode: ProviderMode,
+): boolean {
+  const modes = provider.getSupportedModes?.();
+  return !modes || modes.includes(mode);
+}
 
 export interface SessionRouteDeps {
   sessionDb: SessionDatabase;
   logDb: LogDatabase;
   getAIProvider: (agentType: string) => unknown | undefined;
-  listAIProviders: () => Array<{ pluginName: string; isDefault: boolean }>;
+  listAIProviders: () => AIProviderSummary[];
 }
 
 export function createSessionRoutes(deps: SessionRouteDeps) {
@@ -81,8 +105,10 @@ export function createSessionRoutes(deps: SessionRouteDeps) {
                 createSession?: (
                   config: Record<string, unknown>,
                 ) => Promise<unknown>;
+                setMode?: (mode: ProviderMode) => void;
+                getSupportedModes?: () => ProviderMode[];
               }
-            | undefined;
+              | undefined;
 
           if (!provider) {
             set.status = 400;
@@ -92,23 +118,41 @@ export function createSessionRoutes(deps: SessionRouteDeps) {
             };
           }
 
+          const config = (body.config ?? {}) as Record<string, unknown>;
+          const providerConfig =
+            typeof config.providerConfig === "object" &&
+            config.providerConfig !== null
+              ? (config.providerConfig as Record<string, unknown>)
+              : {};
+          const requestedMode = config["mode"];
+          if (isProviderMode(requestedMode)) {
+            if (!providerSupportsMode(provider, requestedMode)) {
+              set.status = 400;
+              return {
+                error: `Provider '${body.agentType}' does not support ${requestedMode.toUpperCase()} mode`,
+                availableProviders: listAIProviders(),
+              };
+            }
+            provider.setMode?.(requestedMode);
+          }
+
           // Create local record
           const session = sessionDb.create({
             name: body.name,
             agentType: body.agentType,
             providerPlugin: body.agentType,
-            config: body.config,
+            config,
           });
 
           // Initialize provider session
           try {
             if (provider.createSession) {
               await provider.createSession({
-                ...body.config,
+                ...config,
                 name: body.name,
                 agentType: body.agentType,
                 providerConfig: {
-                  ...(body.config as Record<string, any>)?.providerConfig,
+                  ...providerConfig,
                   sessionId: session.id,
                 },
               });
@@ -173,10 +217,17 @@ export function createSessionRoutes(deps: SessionRouteDeps) {
           }
 
           // Switch provider mode if requested (sdk/cli)
-          const modeOverride = (body as Record<string, unknown>).mode as string | undefined;
-          if (modeOverride && typeof (provider as Record<string, unknown>).setMode === 'function') {
+          const modeOverride = (body as Record<string, unknown>).mode;
+          if (isProviderMode(modeOverride)) {
+            if (!providerSupportsMode(provider as ModeAwareProvider, modeOverride)) {
+              set.status = 400;
+              return {
+                error: `Provider '${targetAgentType}' does not support ${modeOverride.toUpperCase()} mode`,
+                availableProviders: listAIProviders(),
+              };
+            }
             // Call setMode on the provider object to preserve `this` binding
-            (provider as { setMode: (mode: string) => void }).setMode(modeOverride);
+            (provider as ModeAwareProvider).setMode?.(modeOverride);
           }
 
           // If a model override is provided, update the provider session config

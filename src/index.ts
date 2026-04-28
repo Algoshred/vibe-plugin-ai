@@ -49,6 +49,30 @@ import { QueueProcessor } from "./services/queue-processor.js";
 // ── Plugin Interfaces ────────────────────────────────────────────────────
 
 import type { StorageProvider } from "./db/storage-provider-types.js";
+import type { ProviderMode } from "./provider.js";
+
+const PROVIDER_MODES: ProviderMode[] = ["sdk", "cli"];
+
+export interface AIProviderSummary {
+  pluginName: string;
+  name: string;
+  displayName: string;
+  isDefault: boolean;
+  currentMode: ProviderMode;
+  defaultMode: ProviderMode;
+  supportedModes: ProviderMode[];
+  unsupportedModes: ProviderMode[];
+  modes: Record<ProviderMode, boolean>;
+  prereqApiPrefix?: string;
+}
+
+interface RegisteredAIProvider {
+  readonly name?: string;
+  getMode?: () => ProviderMode;
+  getSupportedModes?: () => ProviderMode[];
+  getDisplayName?: () => string;
+  getPrereqApiPrefix?: () => string;
+}
 
 export interface HostServices {
   logger?: {
@@ -66,9 +90,10 @@ export interface HostServices {
       service: unknown,
     ) => void;
     getProviderByName: <T>(type: string, name: string) => T | undefined;
-    listProvidersForType: (
-      type: string,
-    ) => Array<{ pluginName: string; isDefault: boolean }>;
+    listProvidersForType: (type: string) => Array<{
+      pluginName: string;
+      isDefault: boolean;
+    }>;
   };
 }
 
@@ -290,11 +315,60 @@ function getAIProvider(agentType: string): unknown | undefined {
   return hostServicesRef?.serviceRegistry?.getProviderByName("ai", agentType);
 }
 
-function listAIProviders(): Array<{
-  pluginName: string;
-  isDefault: boolean;
-}> {
-  return hostServicesRef?.serviceRegistry?.listProvidersForType("ai") || [];
+function providerDisplayName(name: string): string {
+  return name
+    .replace(/^ai-/, "")
+    .split("-")
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function normalizeModes(modes: ProviderMode[] | undefined): ProviderMode[] {
+  const unique = new Set<ProviderMode>();
+  for (const mode of modes ?? []) {
+    if (PROVIDER_MODES.includes(mode)) unique.add(mode);
+  }
+  return [...unique];
+}
+
+function listAIProviders(): AIProviderSummary[] {
+  const registry = hostServicesRef?.serviceRegistry;
+  if (!registry) return [];
+
+  return registry.listProvidersForType("ai").map((entry) => {
+    const provider = registry.getProviderByName<RegisteredAIProvider>(
+      "ai",
+      entry.pluginName,
+    );
+    const currentMode = provider?.getMode?.() ?? "cli";
+    const supportedModes = normalizeModes(provider?.getSupportedModes?.());
+    if (supportedModes.length === 0) supportedModes.push(currentMode);
+
+    const unsupportedModes = PROVIDER_MODES.filter(
+      (mode) => !supportedModes.includes(mode),
+    );
+    const defaultMode = supportedModes.includes(currentMode)
+      ? currentMode
+      : supportedModes[0] ?? "cli";
+
+    return {
+      pluginName: entry.pluginName,
+      name: provider?.name ?? entry.pluginName,
+      displayName:
+        provider?.getDisplayName?.() ?? providerDisplayName(entry.pluginName),
+      isDefault: entry.isDefault,
+      currentMode,
+      defaultMode,
+      supportedModes,
+      unsupportedModes,
+      modes: {
+        sdk: supportedModes.includes("sdk"),
+        cli: supportedModes.includes("cli"),
+      },
+      prereqApiPrefix: provider?.getPrereqApiPrefix?.(),
+    };
+  });
 }
 
 // ── Log Ingester Service ────────────────────────────────────────────────
