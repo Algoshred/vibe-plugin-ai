@@ -280,7 +280,10 @@ let fileDb: FileDatabase | null = null;
 let queueProcessor: QueueProcessor | null = null;
 let hostServicesRef: HostServices | null = null;
 
-function requireDb<T extends object | null>(db: T, name: string): NonNullable<T> {
+function requireDb<T extends object | null>(
+  db: T,
+  name: string,
+): NonNullable<T> {
   if (!db) {
     throw new Error(
       `AI plugin: ${name} accessed before onServerStart hydrated storage`,
@@ -350,7 +353,7 @@ function listAIProviders(): AIProviderSummary[] {
     );
     const defaultMode = supportedModes.includes(currentMode)
       ? currentMode
-      : supportedModes[0] ?? "cli";
+      : (supportedModes[0] ?? "cli");
 
     return {
       pluginName: entry.pluginName,
@@ -514,7 +517,15 @@ export const vibePlugin: VibePlugin = {
     // Hydrate all KV tables from the agent's encrypted storage
     // before handling any requests. DBs were constructed in
     // createRoutes; here we warm the in-memory cache.
-    if (promptDb && contextDb && sessionDb && logDb && dispatchDb && queueDb && fileDb) {
+    if (
+      promptDb &&
+      contextDb &&
+      sessionDb &&
+      logDb &&
+      dispatchDb &&
+      queueDb &&
+      fileDb
+    ) {
       await Promise.all([
         promptDb.hydrate(),
         contextDb.hydrate(),

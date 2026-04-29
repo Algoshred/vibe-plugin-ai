@@ -132,11 +132,7 @@ export class ContextDatabase {
     });
   }
 
-  search(
-    q: string,
-    type?: ContextType,
-    limit?: number,
-  ): AIContextRecord[] {
+  search(q: string, type?: ContextType, limit?: number): AIContextRecord[] {
     const needle = q.toLowerCase();
     return this.live()
       .filter(

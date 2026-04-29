@@ -180,15 +180,15 @@ export class PromptDatabase {
       ...existing,
       name: input.name ?? existing.name,
       content: input.content ?? existing.content,
-      category: input.category !== undefined ? input.category : existing.category,
+      category:
+        input.category !== undefined ? input.category : existing.category,
       tags: input.tags ?? existing.tags,
       isShared: input.isShared ?? existing.isShared,
       metadata: input.metadata ?? existing.metadata,
       updatedAt: new Date().toISOString(),
     };
     if (input.content !== undefined) {
-      next.variables =
-        input.variables || this.extractVariables(input.content);
+      next.variables = input.variables || this.extractVariables(input.content);
     } else if (input.variables !== undefined) {
       next.variables = input.variables;
     }

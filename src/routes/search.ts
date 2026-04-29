@@ -49,9 +49,7 @@ export function createSearchRoutes(deps: SearchRouteDeps) {
 
       // Walk the in-memory KV cache directly via LogDatabase.store so
       // we don't pay per-session query overhead. Filter -> sort -> page.
-      const wantSession = sessionIds
-        ? new Set(sessionIds)
-        : null;
+      const wantSession = sessionIds ? new Set(sessionIds) : null;
       const wantType = types ? new Set(types) : null;
 
       const matches: SearchResult[] = [];

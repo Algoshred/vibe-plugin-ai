@@ -50,7 +50,11 @@ export function createSessionRoutes(deps: SessionRouteDeps) {
       .get(
         "/sessions",
         ({ query }) => {
-          const filter: { agentType?: string; status?: SessionStatus; search?: string } = {};
+          const filter: {
+            agentType?: string;
+            status?: SessionStatus;
+            search?: string;
+          } = {};
           if (query.agentType) filter.agentType = query.agentType;
           if (query.status) filter.status = query.status as SessionStatus;
           if (query.search) filter.search = query.search;
@@ -108,7 +112,7 @@ export function createSessionRoutes(deps: SessionRouteDeps) {
                 setMode?: (mode: ProviderMode) => void;
                 getSupportedModes?: () => ProviderMode[];
               }
-              | undefined;
+            | undefined;
 
           if (!provider) {
             set.status = 400;
@@ -196,7 +200,9 @@ export function createSessionRoutes(deps: SessionRouteDeps) {
           }
 
           // Allow per-message provider override (for multi-harness sessions)
-          const targetAgentType = (body as Record<string, unknown>).agentType as string || session.agentType;
+          const targetAgentType =
+            ((body as Record<string, unknown>).agentType as string) ||
+            session.agentType;
 
           const provider = getAIProvider(targetAgentType) as
             | {
@@ -219,7 +225,9 @@ export function createSessionRoutes(deps: SessionRouteDeps) {
           // Switch provider mode if requested (sdk/cli)
           const modeOverride = (body as Record<string, unknown>).mode;
           if (isProviderMode(modeOverride)) {
-            if (!providerSupportsMode(provider as ModeAwareProvider, modeOverride)) {
+            if (
+              !providerSupportsMode(provider as ModeAwareProvider, modeOverride)
+            ) {
               set.status = 400;
               return {
                 error: `Provider '${targetAgentType}' does not support ${modeOverride.toUpperCase()} mode`,
@@ -231,10 +239,16 @@ export function createSessionRoutes(deps: SessionRouteDeps) {
           }
 
           // If a model override is provided, update the provider session config
-          const modelOverride = (body as Record<string, unknown>).model as string | undefined;
+          const modelOverride = (body as Record<string, unknown>).model as
+            | string
+            | undefined;
           if (modelOverride || targetAgentType !== session.agentType) {
-            const configureSession = (provider as Record<string, unknown>).configureSession as
-              | ((sessionId: string, config: Record<string, unknown>) => Promise<void>)
+            const configureSession = (provider as Record<string, unknown>)
+              .configureSession as
+              | ((
+                  sessionId: string,
+                  config: Record<string, unknown>,
+                ) => Promise<void>)
               | undefined;
             if (configureSession) {
               try {
@@ -266,7 +280,11 @@ export function createSessionRoutes(deps: SessionRouteDeps) {
                   ...session.config,
                   name: session.name,
                   agentType: targetAgentType,
-                  model: modelOverride || (session.config as Record<string, unknown>)?.model as string || undefined,
+                  model:
+                    modelOverride ||
+                    ((session.config as Record<string, unknown>)
+                      ?.model as string) ||
+                    undefined,
                   providerConfig: {
                     ...((session.config?.providerConfig as Record<
                       string,
@@ -283,7 +301,10 @@ export function createSessionRoutes(deps: SessionRouteDeps) {
 
           // Build prompt with conversation history context
           let fullPrompt = body.prompt;
-          const history = (body as Record<string, unknown>).conversationHistory as Array<{ role: string; content: string }> | undefined;
+          const history = (body as Record<string, unknown>)
+            .conversationHistory as
+            | Array<{ role: string; content: string }>
+            | undefined;
           if (history && history.length > 0) {
             const historyText = history
               .map((msg) => `[${msg.role.toUpperCase()}]: ${msg.content}`)
@@ -363,10 +384,14 @@ export function createSessionRoutes(deps: SessionRouteDeps) {
             agentType: t.Optional(t.String()),
             model: t.Optional(t.String()),
             mode: t.Optional(t.String()),
-            conversationHistory: t.Optional(t.Array(t.Object({
-              role: t.String(),
-              content: t.String(),
-            }))),
+            conversationHistory: t.Optional(
+              t.Array(
+                t.Object({
+                  role: t.String(),
+                  content: t.String(),
+                }),
+              ),
+            ),
           }),
         },
       )
