@@ -1,6 +1,6 @@
 {
   "name": "@vibecontrols/vibe-plugin-ai",
-  "version": "2026.428.3",
+  "version": "2026.428.4",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "type": "module",
@@ -8,7 +8,7 @@
     "bun": ">=1.3.0"
   },
   "scripts": {
-    "build": "bun build ./src/index.ts --outdir ./dist --target bun --external elysia && tsc --emitDeclarationOnly --declaration --declarationMap --outDir ./dist",
+    "build": "bun build ./src/index.ts --outdir ./dist --target bun --minify-syntax --minify-whitespace --external elysia && tsc --emitDeclarationOnly --declaration --outDir ./dist",
     "lint": "eslint ./src",
     "lint:sanity": "if [ \"${CI:-}\" = \"true\" ]; then bun run lint; else bun run lint -- --cache --cache-location .eslintcache; fi",
     "format": "bunx prettier . --write",
@@ -76,6 +76,7 @@
   },
   "files": [
     "dist/**/*",
+    "!dist/**/*.map",
     "README.md",
     "LICENSE"
   ],
