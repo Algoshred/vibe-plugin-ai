@@ -235,6 +235,25 @@ export function createDispatchRoutes(deps: DispatchRouteDeps) {
             };
           }
 
+          // Session must exist for synchronous dispatch. If it doesn't,
+          // fall back to enqueuing so the dispatch isn't lost — the
+          // queue worker will pick it up once a session bound to this
+          // ID is created. This also lets doctor / smoke tests exercise
+          // the dispatch route without a fully-wired AI provider.
+          if (!sessionDb.getById(sessionId)) {
+            dispatchDb.update(dispatchRecord.id, { status: "queued" });
+            queueDb.enqueue({
+              dispatchedPromptId: dispatchRecord.id,
+              sessionId,
+            });
+            return {
+              status: "queued",
+              dispatchId: dispatchRecord.id,
+              sessionId,
+              reason: "Session not present yet; dispatch enqueued",
+            };
+          }
+
           // Immediate dispatch — send synchronously
           const result = await sendToSession(
             dispatchRecord.id,
