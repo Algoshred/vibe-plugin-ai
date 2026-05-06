@@ -65,7 +65,7 @@ export class SessionDatabase {
     await this.store.hydrate();
   }
 
-  create(input: CreateSessionInput): AISessionRecord {
+  async create(input: CreateSessionInput): Promise<AISessionRecord> {
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
     const rec: AISessionRecord = {
@@ -80,7 +80,11 @@ export class SessionDatabase {
       updatedAt: now,
       terminatedAt: null,
     };
-    this.store.put(rec);
+    // Durable write — the UI hands the returned sessionId to a CLI that
+    // expects to look it up immediately. A fire-and-forget put would lose
+    // sessions if the agent crashed between cache update and disk flush,
+    // surfacing as "Session not found" on the very next request.
+    await this.store.putDurable(rec);
     return rec;
   }
 

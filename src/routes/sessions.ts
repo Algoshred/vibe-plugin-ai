@@ -140,8 +140,9 @@ export function createSessionRoutes(deps: SessionRouteDeps) {
             provider.setMode?.(requestedMode);
           }
 
-          // Create local record
-          const session = sessionDb.create({
+          // Create local record. Durable to disk before returning so the
+          // sessionId we hand back is immediately readable by a CLI/SDK.
+          const session = await sessionDb.create({
             name: body.name,
             agentType: body.agentType,
             providerPlugin: body.agentType,

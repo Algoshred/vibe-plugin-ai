@@ -27,7 +27,7 @@ async function setup() {
     logDb.hydrate(),
   ]);
 
-  const session = sessionDb.create({ name: "T", agentType: "claude" });
+  const session = await sessionDb.create({ name: "T", agentType: "claude" });
   const dispatch = dispatchDb.create({
     sessionId: session.id,
     content: "hello",

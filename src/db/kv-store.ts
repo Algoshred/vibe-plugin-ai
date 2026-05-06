@@ -95,6 +95,26 @@ export class KVStore<T extends object> {
     return record;
   }
 
+  /**
+   * Durable variant of {@link put}: awaits the underlying storage write
+   * before returning. Use for records whose loss would manifest as a
+   * "not found" to a downstream consumer if the agent crashes between
+   * the cache update and the encrypted-disk flush — e.g. AI session
+   * creation, where the UI hands the sessionId straight to a CLI that
+   * needs it to be readable on the next boot.
+   */
+  async putDurable(record: T): Promise<T> {
+    const id = record[this.idField] as unknown;
+    if (typeof id !== "string" || !id) {
+      throw new Error(
+        `KVStore[${this.namespace}]: record missing string id field '${String(this.idField)}'`,
+      );
+    }
+    this.cache.set(id, record);
+    await this.storage.set(this.namespace, id, JSON.stringify(record));
+    return record;
+  }
+
   delete(id: string): boolean {
     const existed = this.cache.delete(id);
     if (existed) {

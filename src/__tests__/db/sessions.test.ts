@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { SessionDatabase } from "../../db/sessions.js";
 import { createMockStorage } from "../helpers/mock-storage.js";
 
-describe("SessionDatabase", () => {
+describe("SessionDatabase", async () => {
   let db: SessionDatabase;
 
   beforeEach(async () => {
@@ -21,9 +21,9 @@ describe("SessionDatabase", () => {
 
   // ── create ──────────────────────────────────────────────────────
 
-  describe("create", () => {
-    it("creates a session with generated ID and default status", () => {
-      const session = db.create({
+  describe("create", async () => {
+    it("creates a session with generated ID and default status", async () => {
+      const session = await db.create({
         name: "Test Session",
         agentType: "claude",
       });
@@ -40,8 +40,8 @@ describe("SessionDatabase", () => {
       expect(session.terminatedAt).toBeNull();
     });
 
-    it("uses providerPlugin when specified", () => {
-      const session = db.create({
+    it("uses providerPlugin when specified", async () => {
+      const session = await db.create({
         name: "Custom Provider",
         agentType: "claude",
         providerPlugin: "claude-custom",
@@ -50,9 +50,9 @@ describe("SessionDatabase", () => {
       expect(session.providerPlugin).toBe("claude-custom");
     });
 
-    it("stores config as JSON", () => {
+    it("stores config as JSON", async () => {
       const config = { model: "claude-sonnet-4-20250514", maxTokens: 8192 };
-      const session = db.create({
+      const session = await db.create({
         name: "With Config",
         agentType: "claude",
         config,
@@ -64,9 +64,9 @@ describe("SessionDatabase", () => {
 
   // ── getById ─────────────────────────────────────────────────────
 
-  describe("getById", () => {
-    it("returns session by ID", () => {
-      const created = db.create({ name: "Find Me", agentType: "codex" });
+  describe("getById", async () => {
+    it("returns session by ID", async () => {
+      const created = await db.create({ name: "Find Me", agentType: "codex" });
       const found = db.getById(created.id);
 
       expect(found).not.toBeNull();
@@ -74,7 +74,7 @@ describe("SessionDatabase", () => {
       expect(found!.name).toBe("Find Me");
     });
 
-    it("returns null for unknown ID", () => {
+    it("returns null for unknown ID", async () => {
       const result = db.getById("nonexistent-id");
       expect(result).toBeNull();
     });
@@ -82,30 +82,30 @@ describe("SessionDatabase", () => {
 
   // ── list ────────────────────────────────────────────────────────
 
-  describe("list", () => {
-    it("returns all sessions with total count", () => {
-      db.create({ name: "S1", agentType: "claude" });
-      db.create({ name: "S2", agentType: "codex" });
-      db.create({ name: "S3", agentType: "claude" });
+  describe("list", async () => {
+    it("returns all sessions with total count", async () => {
+      await db.create({ name: "S1", agentType: "claude" });
+      await db.create({ name: "S2", agentType: "codex" });
+      await db.create({ name: "S3", agentType: "claude" });
 
       const result = db.list();
       expect(result.total).toBe(3);
       expect(result.items).toHaveLength(3);
     });
 
-    it("filters by agentType", () => {
-      db.create({ name: "Claude 1", agentType: "claude" });
-      db.create({ name: "Claude 2", agentType: "claude" });
-      db.create({ name: "Codex 1", agentType: "codex" });
+    it("filters by agentType", async () => {
+      await db.create({ name: "Claude 1", agentType: "claude" });
+      await db.create({ name: "Claude 2", agentType: "claude" });
+      await db.create({ name: "Codex 1", agentType: "codex" });
 
       const result = db.list({ agentType: "claude" });
       expect(result.total).toBe(2);
       expect(result.items.every((s) => s.agentType === "claude")).toBe(true);
     });
 
-    it("filters by status", () => {
-      const s1 = db.create({ name: "Active", agentType: "claude" });
-      db.create({ name: "Idle", agentType: "claude" });
+    it("filters by status", async () => {
+      const s1 = await db.create({ name: "Active", agentType: "claude" });
+      await db.create({ name: "Idle", agentType: "claude" });
 
       db.update(s1.id, { status: "active" });
 
@@ -114,9 +114,9 @@ describe("SessionDatabase", () => {
       expect(result.items[0]!.status).toBe("active");
     });
 
-    it("supports pagination with limit and offset", () => {
+    it("supports pagination with limit and offset", async () => {
       for (let i = 0; i < 10; i++) {
-        db.create({ name: `Session ${i}`, agentType: "claude" });
+        await db.create({ name: `Session ${i}`, agentType: "claude" });
       }
 
       const page1 = db.list(undefined, { limit: 3, offset: 0 });
@@ -133,17 +133,17 @@ describe("SessionDatabase", () => {
       expect(lastPage.hasMore).toBe(false);
     });
 
-    it("returns empty result when no sessions exist", () => {
+    it("returns empty result when no sessions exist", async () => {
       const result = db.list();
       expect(result.total).toBe(0);
       expect(result.items).toHaveLength(0);
       expect(result.hasMore).toBe(false);
     });
 
-    it("combines filters", () => {
-      const s1 = db.create({ name: "Active Claude", agentType: "claude" });
-      db.create({ name: "Idle Claude", agentType: "claude" });
-      db.create({ name: "Active Codex", agentType: "codex" });
+    it("combines filters", async () => {
+      const s1 = await db.create({ name: "Active Claude", agentType: "claude" });
+      await db.create({ name: "Idle Claude", agentType: "claude" });
+      await db.create({ name: "Active Codex", agentType: "codex" });
 
       db.update(s1.id, { status: "active" });
 
@@ -155,40 +155,40 @@ describe("SessionDatabase", () => {
 
   // ── update ──────────────────────────────────────────────────────
 
-  describe("update", () => {
-    it("updates name", () => {
-      const session = db.create({ name: "Old Name", agentType: "claude" });
+  describe("update", async () => {
+    it("updates name", async () => {
+      const session = await db.create({ name: "Old Name", agentType: "claude" });
       const updated = db.update(session.id, { name: "New Name" });
 
       expect(updated).not.toBeNull();
       expect(updated!.name).toBe("New Name");
     });
 
-    it("updates config", () => {
-      const session = db.create({ name: "S", agentType: "claude" });
+    it("updates config", async () => {
+      const session = await db.create({ name: "S", agentType: "claude" });
       const newConfig = { model: "claude-opus-4-20250514" };
       const updated = db.update(session.id, { config: newConfig });
 
       expect(updated!.config).toEqual(newConfig);
     });
 
-    it("updates status", () => {
-      const session = db.create({ name: "S", agentType: "claude" });
+    it("updates status", async () => {
+      const session = await db.create({ name: "S", agentType: "claude" });
       const updated = db.update(session.id, { status: "processing" });
 
       expect(updated!.status).toBe("processing");
     });
 
-    it("sets terminatedAt when status becomes terminated", () => {
-      const session = db.create({ name: "S", agentType: "claude" });
+    it("sets terminatedAt when status becomes terminated", async () => {
+      const session = await db.create({ name: "S", agentType: "claude" });
       const updated = db.update(session.id, { status: "terminated" });
 
       expect(updated!.status).toBe("terminated");
       expect(updated!.terminatedAt).not.toBeNull();
     });
 
-    it("updates stats", () => {
-      const session = db.create({ name: "S", agentType: "claude" });
+    it("updates stats", async () => {
+      const session = await db.create({ name: "S", agentType: "claude" });
       const newStats = {
         inputTokens: 100,
         outputTokens: 200,
@@ -200,8 +200,8 @@ describe("SessionDatabase", () => {
       expect(updated!.stats).toEqual(newStats);
     });
 
-    it("sets updatedAt on update", () => {
-      const session = db.create({ name: "S", agentType: "claude" });
+    it("sets updatedAt on update", async () => {
+      const session = await db.create({ name: "S", agentType: "claude" });
       const updated = db.update(session.id, { name: "Changed" });
 
       // updatedAt should be a valid ISO string
@@ -209,7 +209,7 @@ describe("SessionDatabase", () => {
       expect(new Date(updated!.updatedAt).getTime()).toBeGreaterThan(0);
     });
 
-    it("returns null for unknown ID", () => {
+    it("returns null for unknown ID", async () => {
       const result = db.update("nonexistent", { name: "X" });
       expect(result).toBeNull();
     });
@@ -217,9 +217,9 @@ describe("SessionDatabase", () => {
 
   // ── terminate ───────────────────────────────────────────────────
 
-  describe("terminate", () => {
-    it("terminates an active session", () => {
-      const session = db.create({ name: "Active", agentType: "claude" });
+  describe("terminate", async () => {
+    it("terminates an active session", async () => {
+      const session = await db.create({ name: "Active", agentType: "claude" });
       const result = db.terminate(session.id);
 
       expect(result).toBe(true);
@@ -229,15 +229,15 @@ describe("SessionDatabase", () => {
       expect(terminated!.terminatedAt).not.toBeNull();
     });
 
-    it("returns false for already terminated session", () => {
-      const session = db.create({ name: "Done", agentType: "claude" });
+    it("returns false for already terminated session", async () => {
+      const session = await db.create({ name: "Done", agentType: "claude" });
       db.terminate(session.id);
 
       const result = db.terminate(session.id);
       expect(result).toBe(false);
     });
 
-    it("returns false for unknown ID", () => {
+    it("returns false for unknown ID", async () => {
       const result = db.terminate("no-such-id");
       expect(result).toBe(false);
     });
