@@ -565,9 +565,13 @@ export const vibePlugin: VibePlugin = {
       getAIProvider,
       logger: hostServices?.logger,
     });
-    queueProcessor.start(5000);
+    // Event-driven now — `start()` defaults to a 60s safety drain.
+    queueProcessor.start();
 
-    hostServices?.logger?.info("ai-plugin", "Queue processor started");
+    hostServices?.logger?.info(
+      "ai-plugin",
+      "Queue processor started (event-driven)",
+    );
   },
 
   onServerStop() {

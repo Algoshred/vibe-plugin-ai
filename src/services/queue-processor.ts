@@ -1,14 +1,26 @@
 /**
  * Queue Processor
  *
- * Background service that polls the prompt queue and dispatches
+ * Background service that drains the prompt queue and dispatches
  * queued prompts to their target AI sessions via provider plugins.
+ *
+ * Wakeup strategy:
+ *   1. Event-driven: `QueueDatabase.on("enqueued", …)` triggers an
+ *      immediate drain. Producers (dispatch routes) and the processor
+ *      live in the same agent process, so an in-process EventEmitter
+ *      is the right primitive here — no broker required.
+ *   2. Safety timer: a low-frequency (60s) `setInterval` re-runs the
+ *      drain so any item that was somehow missed by an event (e.g. a
+ *      listener crash, scheduled-for-future items now ready, server
+ *      restart with un-drained backlog) still gets picked up.
  */
 
 import type { QueueDatabase } from "../db/queue.js";
 import type { DispatchedPromptDatabase } from "../db/dispatched-prompts.js";
 import type { SessionDatabase } from "../db/sessions.js";
 import type { LogDatabase } from "../db/logs.js";
+
+const SAFETY_INTERVAL_MS = 60_000;
 
 export interface QueueProcessorDeps {
   queueDb: QueueDatabase;
@@ -26,27 +38,50 @@ export interface QueueProcessorDeps {
 export class QueueProcessor {
   private intervalId: ReturnType<typeof setInterval> | null = null;
   private processing = false;
+  private pendingDrain = false;
+  private unsubscribeEnqueue: (() => void) | null = null;
   private deps: QueueProcessorDeps;
 
   constructor(deps: QueueProcessorDeps) {
     this.deps = deps;
   }
 
-  start(intervalMs = 5000): void {
-    if (this.intervalId) return;
+  /**
+   * Start the processor.
+   *
+   * @param safetyIntervalMs - Low-frequency safety drain. Defaults to 60s;
+   *   only intended as a backstop for missed events. Pass smaller values
+   *   in tests.
+   */
+  start(safetyIntervalMs = SAFETY_INTERVAL_MS): void {
+    if (this.intervalId || this.unsubscribeEnqueue) return;
 
     this.deps.logger?.info(
       "queue-processor",
-      `Started (polling every ${intervalMs}ms)`,
+      `Started (event-driven, safety drain every ${safetyIntervalMs}ms)`,
     );
 
-    this.intervalId = setInterval(async () => {
-      if (this.processing) return;
-      await this.processQueue();
-    }, intervalMs);
+    // Wire up the event-driven path. We coalesce bursts via `pendingDrain`
+    // so a flood of enqueues doesn't spawn a flood of overlapping drains.
+    this.unsubscribeEnqueue = this.deps.queueDb.on("enqueued", () => {
+      this.scheduleDrain();
+    });
+
+    // Safety timer — runs much less often than the old 5s poll.
+    this.intervalId = setInterval(() => {
+      this.scheduleDrain();
+    }, safetyIntervalMs);
+
+    // Drain anything that was already pending at startup (e.g. items
+    // persisted across an agent restart).
+    this.scheduleDrain();
   }
 
   stop(): void {
+    if (this.unsubscribeEnqueue) {
+      this.unsubscribeEnqueue();
+      this.unsubscribeEnqueue = null;
+    }
     if (this.intervalId) {
       clearInterval(this.intervalId);
       this.intervalId = null;
@@ -54,15 +89,42 @@ export class QueueProcessor {
     }
   }
 
-  private async processQueue(): Promise<void> {
-    this.processing = true;
+  /**
+   * Coalesce drain requests. If a drain is already running, mark a
+   * follow-up so any items that arrived mid-drain still get picked up.
+   * Microtask scheduling lets multiple synchronous `enqueue()` calls fold
+   * into a single drain pass.
+   */
+  private scheduleDrain(): void {
+    if (this.processing) {
+      this.pendingDrain = true;
+      return;
+    }
+    queueMicrotask(() => {
+      void this.runDrain();
+    });
+  }
 
+  private async runDrain(): Promise<void> {
+    if (this.processing) {
+      this.pendingDrain = true;
+      return;
+    }
+    this.processing = true;
+    try {
+      do {
+        this.pendingDrain = false;
+        await this.processQueue();
+      } while (this.pendingDrain);
+    } finally {
+      this.processing = false;
+    }
+  }
+
+  private async processQueue(): Promise<void> {
     try {
       const items = this.deps.queueDb.getReady(5);
-      if (items.length === 0) {
-        this.processing = false;
-        return;
-      }
+      if (items.length === 0) return;
 
       this.deps.logger?.debug(
         "queue-processor",
@@ -77,8 +139,6 @@ export class QueueProcessor {
         "queue-processor",
         `Queue processing error: ${err instanceof Error ? err.message : "unknown"}`,
       );
-    } finally {
-      this.processing = false;
     }
   }
 

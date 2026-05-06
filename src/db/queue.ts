@@ -5,6 +5,7 @@
  * scheduled, and event-triggered execution.
  */
 
+import { EventEmitter } from "node:events";
 import { KVStore, query } from "./kv-store.js";
 import type { KVLogger } from "./kv-store.js";
 import type { StorageProvider } from "./storage-provider-types.js";
@@ -42,15 +43,32 @@ export interface EnqueueInput {
 
 const NAMESPACE = "ai:queue";
 
+/**
+ * Event names emitted by `QueueDatabase`. Consumers (e.g. `QueueProcessor`)
+ * listen to `enqueued` so they can drain the queue immediately instead of
+ * waiting for the next poll tick.
+ */
+export type QueueEvent = "enqueued";
+
 export class QueueDatabase {
   readonly store: KVStore<QueueItem>;
+  private readonly emitter = new EventEmitter();
 
   constructor(storage: StorageProvider, logger?: KVLogger) {
     this.store = new KVStore(storage, NAMESPACE, "id", logger);
+    // Avoid the default 10-listener warning if multiple consumers (CLI,
+    // tests, processor) attach in the same process lifetime.
+    this.emitter.setMaxListeners(50);
   }
 
   async hydrate(): Promise<void> {
     await this.store.hydrate();
+  }
+
+  /** Subscribe to queue events. Returns an unsubscribe function. */
+  on(event: QueueEvent, listener: (item: QueueItem) => void): () => void {
+    this.emitter.on(event, listener);
+    return () => this.emitter.off(event, listener);
   }
 
   enqueue(input: EnqueueInput): QueueItem {
@@ -70,6 +88,10 @@ export class QueueDatabase {
       updatedAt: now,
     };
     this.store.put(rec);
+    // Fire-and-forget: listeners are local in-process callbacks, so a
+    // synchronous emit is fine. We deliberately do NOT await listeners —
+    // enqueue must remain non-blocking from the caller's perspective.
+    this.emitter.emit("enqueued", rec);
     return rec;
   }
 
@@ -162,6 +184,6 @@ export class QueueDatabase {
   }
 
   close(): void {
-    /* no-op */
+    this.emitter.removeAllListeners();
   }
 }
