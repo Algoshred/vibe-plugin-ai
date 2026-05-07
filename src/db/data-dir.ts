@@ -2,7 +2,7 @@
  * Resolves the on-disk directory the AI plugin writes to.
  *
  * The host agent (vibecontrols-agent) sets `VIBECONTROLS_DATA_DIR` to
- * `.boff/vibecontrols/agents/{agentId}/` at boot so all plugins share a
+ * `.boff/vibecontrols/agents/{profile}/` at boot so all plugins share a
  * per-agent, reset-aware, encryption-at-rest-friendly data directory.
  *
  * When the plugin is loaded standalone (CLI tests, ad-hoc usage without

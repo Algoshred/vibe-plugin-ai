@@ -3,7 +3,7 @@
  *
  * Upload, list, and delete file attachments for AI sessions. Files live
  * under `{VIBECONTROLS_DATA_DIR}/ai-files/<sessionId>/` — the host agent
- * sets that env var to `.boff/vibecontrols/agents/{agentId}/` so
+ * sets that env var to `.boff/vibecontrols/agents/{profile}/` so
  * uploaded files stay per-agent and survive or disappear with the
  * agent's local state.
  * Mounted at /api/ai/sessions by the plugin system.
