@@ -387,4 +387,32 @@ export interface AIAgentProvider {
    * Optional — no-op if provider doesn't support dual mode.
    */
   setMode?(mode: ProviderMode): void;
+
+  /**
+   * CLI binary spec for `vibe ai run`.
+   * Returns the binary name + base args + env to inherit, or `null` when
+   * this provider has no CLI mode (e.g. SDK-only providers like openrouter).
+   *
+   * REQUIRED on every provider — return null instead of leaving the method
+   * undefined so callers don't need to defensive-check existence.
+   */
+  getCliLaunchSpec(): {
+    binary: string;
+    baseArgs?: string[];
+    env?: Record<string, string>;
+  } | null;
+
+  /**
+   * One-shot non-interactive prompt via the provider's SDK adapter.
+   * Most providers wire this to their existing `sendPrompt(...)` SDK path.
+   *
+   * REQUIRED on every provider — return a rejected promise instead of leaving
+   * the method undefined so callers don't need to defensive-check existence.
+   */
+  sdkOneShot(opts: {
+    prompt: string;
+    model?: string;
+    maxTokens?: number;
+    extras?: Record<string, unknown>;
+  }): Promise<{ text: string; usage?: unknown }>;
 }

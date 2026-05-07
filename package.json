@@ -1,6 +1,6 @@
 {
   "name": "@vibecontrols/vibe-plugin-ai",
-  "version": "2026.507.2",
+  "version": "2026.508.1",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "type": "module",

@@ -1546,8 +1546,474 @@ export const vibePlugin: VibePlugin = {
           json: (stats) => redactSecrets(stats),
         });
       });
+
+    // ── vibe ai run <harness> [-s session] [-- ...harnessArgs] ──────
+    // Spawn an interactive AI harness binary inside a managed terminal
+    // session. With `-s <name>` the session is reused (attach if running
+    // the same harness, hard error on harness mismatch). Without `-s`
+    // an anonymous `vibe-ai-<harness>-<short>` session is created.
+    aiCmd
+      .command("run <harness> [harnessArgs...]")
+      .description(
+        "Run an AI harness inside a session manager (creates or attaches)",
+      )
+      .option(
+        "-s, --session <name>",
+        "Session name (attach if exists, create if not)",
+      )
+      .option(
+        "--list-harnesses",
+        "List harnesses that support `vibe ai run`",
+      )
+      .option("--json", "Emit JSON envelope on errors / list")
+      .allowUnknownOption(true)
+      .passThroughOptions()
+      .action(
+        async (
+          harness: string,
+          harnessArgs: string[],
+          opts: {
+            session?: string;
+            listHarnesses?: boolean;
+            json?: boolean;
+          },
+        ) => {
+          await runAiRunCommand(harness, harnessArgs ?? [], opts);
+        },
+      );
+
+    // ── vibe ai sdk <provider> [-- ...sdkArgs] ──────────────────────
+    // One-shot non-interactive SDK call. `--prompt`, `--model`,
+    // `--max-tokens` are parsed; everything else is forwarded as
+    // `extras` to the provider.
+    aiCmd
+      .command("sdk <provider> [sdkArgs...]")
+      .description("One-shot SDK prompt against an AI provider")
+      .option("--json", "Emit JSON envelope")
+      .allowUnknownOption(true)
+      .passThroughOptions()
+      .action(
+        async (
+          providerName: string,
+          sdkArgs: string[],
+          opts: { json?: boolean },
+        ) => {
+          await runAiSdkCommand(providerName, sdkArgs ?? [], opts);
+        },
+      );
   },
 };
+
+// ── vibe ai run / vibe ai sdk implementation ─────────────────────────────
+
+interface CliLaunchSpec {
+  binary: string;
+  baseArgs?: string[];
+  env?: Record<string, string>;
+}
+
+interface SdkOneShotResult {
+  text: string;
+  usage?: unknown;
+}
+
+interface AIProviderRunCapable {
+  readonly name: string;
+  getDisplayName?: () => string;
+  getCliLaunchSpec?: () => CliLaunchSpec | null;
+  sdkOneShot?: (opts: {
+    prompt: string;
+    model?: string;
+    maxTokens?: number;
+    extras?: Record<string, unknown>;
+  }) => Promise<SdkOneShotResult>;
+}
+
+interface SessionProviderLike {
+  readonly name: string;
+  list: () => Promise<
+    Array<{
+      id: string;
+      name: string;
+      status: string;
+      metadata?: Record<string, unknown>;
+    }>
+  >;
+  get?: (sessionId: string) => Promise<{
+    id: string;
+    name: string;
+    status: string;
+    metadata?: Record<string, unknown>;
+  } | null>;
+  create: (config: {
+    name: string;
+    command?: string;
+    environment?: Record<string, string>;
+    workingDirectory?: string;
+    metadata?: Record<string, unknown>;
+  }) => Promise<{ id: string; name: string }>;
+  sendCommand?: (sessionId: string, command: string) => Promise<void>;
+}
+
+function shortUuid(): string {
+  return crypto.randomUUID().split("-")[0] ?? "anon";
+}
+
+function defaultSessionNameFor(harness: string): string {
+  return `vibe-ai-${harness}-${shortUuid()}`;
+}
+
+function formatRunCommand(spec: CliLaunchSpec, extraArgs: string[]): string {
+  const parts = [spec.binary, ...(spec.baseArgs ?? []), ...extraArgs];
+  return parts
+    .map((p) =>
+      /[\s"']/.test(p) ? `'${p.replace(/'/g, "'\\''")}'` : p,
+    )
+    .join(" ");
+}
+
+// Test surface: directly exercise the run/sdk core without going through the
+// global hostServicesRef. The CLI shim (registered via onCliSetup) calls
+// `runAiRunCommand` / `runAiSdkCommand` which simply delegate here with the
+// hostServices closure already bound.
+export interface AiRunDeps {
+  getAiProvider: (name: string) => AIProviderRunCapable | undefined;
+  listAiProviders: () => Array<{ pluginName: string }>;
+  getSessionProvider: () => SessionProviderLike | undefined;
+  log?: (line: string) => void;
+  err?: (line: string) => void;
+  exit?: (code: number) => void;
+}
+
+export async function runAiRunCore(
+  harness: string,
+  harnessArgs: string[],
+  opts: { session?: string; listHarnesses?: boolean; json?: boolean },
+  deps: AiRunDeps,
+): Promise<{ ok: boolean; action?: "create" | "attach"; error?: string }> {
+  const log = deps.log ?? ((s: string) => console.log(s));
+  const err = deps.err ?? ((s: string) => console.error(s));
+  const exit = deps.exit ?? ((c: number) => process.exit(c));
+
+  if (opts.listHarnesses) {
+    const rows = deps
+      .listAiProviders()
+      .map((entry) => {
+        const provider = deps.getAiProvider(entry.pluginName);
+        if (!provider) return null;
+        const spec = provider.getCliLaunchSpec?.() ?? null;
+        if (!spec) return null;
+        return {
+          name: provider.name ?? entry.pluginName,
+          displayName: provider.getDisplayName?.() ?? entry.pluginName,
+          binary: spec.binary,
+        };
+      })
+      .filter(
+        (r): r is { name: string; displayName: string; binary: string } =>
+          r !== null,
+      );
+    if (opts.json) {
+      log(JSON.stringify({ ok: true, harnesses: rows }, null, 2));
+    } else if (rows.length === 0) {
+      log("\n  No AI harnesses available for `vibe ai run`.\n");
+    } else {
+      log("\n  \x1b[1m── AI Harnesses ──\x1b[0m\n");
+      for (const row of rows) {
+        log(
+          `  \x1b[1m${row.name.padEnd(16)}\x1b[0m ${row.displayName.padEnd(22)} \x1b[90m(${row.binary})\x1b[0m`,
+        );
+      }
+      log("");
+    }
+    return { ok: true };
+  }
+
+  const aiProvider = deps.getAiProvider(harness);
+  if (!aiProvider) {
+    const message = `unknown harness '${harness}'`;
+    if (opts.json) err(JSON.stringify({ ok: false, error: message }, null, 2));
+    else err(`\x1b[31mError:\x1b[0m ${message}`);
+    exit(1);
+    return { ok: false, error: message };
+  }
+  const spec = aiProvider.getCliLaunchSpec?.() ?? null;
+  if (!spec) {
+    const message = `provider '${harness}' has no CLI mode (sdkOneShot only). Use 'vibe ai sdk ${harness}' instead.`;
+    if (opts.json) err(JSON.stringify({ ok: false, error: message }, null, 2));
+    else err(`\x1b[31mError:\x1b[0m ${message}`);
+    exit(1);
+    return { ok: false, error: message };
+  }
+
+  const sessionProvider = deps.getSessionProvider();
+  if (!sessionProvider) {
+    const message =
+      "no session provider registered (install vibe-plugin-session-tmux or similar)";
+    if (opts.json) err(JSON.stringify({ ok: false, error: message }, null, 2));
+    else err(`\x1b[31mError:\x1b[0m ${message}`);
+    exit(1);
+    return { ok: false, error: message };
+  }
+
+  const sessionName = opts.session ?? defaultSessionNameFor(harness);
+  const launchArgs = [...(spec.baseArgs ?? []), ...harnessArgs];
+  const launchCmd = formatRunCommand(spec, harnessArgs);
+  const env: Record<string, string> = { ...(spec.env ?? {}) };
+
+  // Look up existing session if explicit name given.
+  let existing: Awaited<ReturnType<SessionProviderLike["list"]>>[number] | null =
+    null;
+  if (opts.session) {
+    const all = await sessionProvider.list();
+    existing = all.find((s) => s.name === sessionName) ?? null;
+  }
+
+  if (existing) {
+    const recordedHarness =
+      typeof existing.metadata?.["harness"] === "string"
+        ? (existing.metadata["harness"] as string)
+        : null;
+    if (recordedHarness && recordedHarness !== harness) {
+      const message = `session ${sessionName} is currently running ${recordedHarness}; kill it first with 'vibe session kill ${sessionName}' or pick a different -s name`;
+      if (opts.json)
+        err(JSON.stringify({ ok: false, error: message }, null, 2));
+      else err(`\x1b[31mError:\x1b[0m ${message}`);
+      exit(2);
+      return { ok: false, error: message };
+    }
+    if (opts.json) {
+      log(
+        JSON.stringify(
+          {
+            ok: true,
+            action: "attach",
+            session: { id: existing.id, name: existing.name },
+            harness,
+            command: launchCmd,
+          },
+          null,
+          2,
+        ),
+      );
+    } else {
+      log(
+        `\n  \x1b[32mAttached\x1b[0m to session \x1b[1m${existing.name}\x1b[0m (${harness}).\n  Use 'vibe session attach ${existing.name}' to reach the terminal.\n`,
+      );
+    }
+    return { ok: true, action: "attach" };
+  }
+
+  // Create + spawn.
+  const created = await sessionProvider.create({
+    name: sessionName,
+    command: spec.binary,
+    environment: env,
+    metadata: {
+      harness,
+      ai: true,
+      cliArgs: launchArgs,
+    },
+  });
+
+  // Send the launch line so harness picks up the args we collected.
+  if (sessionProvider.sendCommand && launchArgs.length > 0) {
+    try {
+      await sessionProvider.sendCommand(created.id, launchCmd);
+    } catch {
+      // Non-fatal — harness already running with `command: spec.binary`.
+    }
+  }
+
+  if (opts.json) {
+    log(
+      JSON.stringify(
+        {
+          ok: true,
+          action: "create",
+          session: { id: created.id, name: created.name },
+          harness,
+          command: launchCmd,
+        },
+        null,
+        2,
+      ),
+    );
+  } else {
+    log(
+      `\n  \x1b[32mStarted\x1b[0m \x1b[1m${harness}\x1b[0m in session \x1b[1m${created.name}\x1b[0m.\n  Command: ${launchCmd}\n  Use 'vibe session attach ${created.name}' to reach the terminal.\n`,
+    );
+  }
+  return { ok: true, action: "create" };
+}
+
+async function runAiRunCommand(
+  harness: string,
+  harnessArgs: string[],
+  opts: { session?: string; listHarnesses?: boolean; json?: boolean },
+): Promise<void> {
+  const registry = hostServicesRef?.serviceRegistry;
+  await runAiRunCore(harness, harnessArgs, opts, {
+    getAiProvider: (name) =>
+      registry?.getProviderByName<AIProviderRunCapable>("ai", name),
+    listAiProviders: () => registry?.listProvidersForType("ai") ?? [],
+    getSessionProvider: () => pickFirstSessionProvider(),
+  });
+}
+
+function pickFirstSessionProvider(): SessionProviderLike | undefined {
+  const registry = hostServicesRef?.serviceRegistry;
+  if (!registry) return undefined;
+  for (const entry of registry.listProvidersForType("session")) {
+    const provider = registry.getProviderByName<SessionProviderLike>(
+      "session",
+      entry.pluginName,
+    );
+    if (provider) return provider;
+  }
+  return undefined;
+}
+
+interface ParsedSdkArgs {
+  prompt: string | null;
+  model?: string;
+  maxTokens?: number;
+  extras: Record<string, unknown>;
+}
+
+function parseSdkArgs(rawArgs: string[]): ParsedSdkArgs {
+  const out: ParsedSdkArgs = { prompt: null, extras: {} };
+  for (let i = 0; i < rawArgs.length; i++) {
+    const tok = rawArgs[i];
+    if (tok === undefined) continue;
+    if (tok === "--prompt" || tok === "-p") {
+      out.prompt = rawArgs[++i] ?? "";
+      continue;
+    }
+    if (tok === "--model" || tok === "-m") {
+      out.model = rawArgs[++i] ?? undefined;
+      continue;
+    }
+    if (tok === "--max-tokens") {
+      const v = rawArgs[++i];
+      const n = v === undefined ? NaN : Number.parseInt(v, 10);
+      if (!Number.isNaN(n)) out.maxTokens = n;
+      continue;
+    }
+    if (tok.startsWith("--")) {
+      const key = tok.replace(/^--/, "");
+      const next = rawArgs[i + 1];
+      if (next !== undefined && !next.startsWith("--")) {
+        out.extras[key] = next;
+        i++;
+      } else {
+        out.extras[key] = true;
+      }
+      continue;
+    }
+    // Positional after the parsed flags becomes the prompt if not already set
+    if (out.prompt === null) {
+      out.prompt = tok;
+    } else {
+      const arr = (out.extras["_"] as unknown[] | undefined) ?? [];
+      arr.push(tok);
+      out.extras["_"] = arr;
+    }
+  }
+  return out;
+}
+
+export interface AiSdkDeps {
+  getAiProvider: (name: string) => AIProviderRunCapable | undefined;
+  log?: (line: string) => void;
+  err?: (line: string) => void;
+  exit?: (code: number) => void;
+  write?: (chunk: string) => void;
+}
+
+export async function runAiSdkCore(
+  providerName: string,
+  rawArgs: string[],
+  opts: { json?: boolean },
+  deps: AiSdkDeps,
+): Promise<{ ok: boolean; text?: string; error?: string }> {
+  const log = deps.log ?? ((s: string) => console.log(s));
+  const err = deps.err ?? ((s: string) => console.error(s));
+  const exit = deps.exit ?? ((c: number) => process.exit(c));
+  const write = deps.write ?? ((s: string) => process.stdout.write(s));
+
+  const provider = deps.getAiProvider(providerName);
+  if (!provider) {
+    const message = `unknown provider '${providerName}'`;
+    if (opts.json) err(JSON.stringify({ ok: false, error: message }, null, 2));
+    else err(`\x1b[31mError:\x1b[0m ${message}`);
+    exit(1);
+    return { ok: false, error: message };
+  }
+  if (typeof provider.sdkOneShot !== "function") {
+    const message = `provider '${providerName}' does not implement sdkOneShot()`;
+    if (opts.json) err(JSON.stringify({ ok: false, error: message }, null, 2));
+    else err(`\x1b[31mError:\x1b[0m ${message}`);
+    exit(1);
+    return { ok: false, error: message };
+  }
+
+  const parsed = parseSdkArgs(rawArgs);
+  if (parsed.prompt === null || parsed.prompt === "") {
+    const message =
+      "missing --prompt <text> (pass after `--`, e.g. `vibe ai sdk claude -- --prompt 'hello'`)";
+    if (opts.json) err(JSON.stringify({ ok: false, error: message }, null, 2));
+    else err(`\x1b[31mError:\x1b[0m ${message}`);
+    exit(1);
+    return { ok: false, error: message };
+  }
+
+  try {
+    const result = await provider.sdkOneShot({
+      prompt: parsed.prompt,
+      model: parsed.model,
+      maxTokens: parsed.maxTokens,
+      extras: parsed.extras,
+    });
+    if (opts.json) {
+      log(
+        JSON.stringify(
+          {
+            ok: true,
+            provider: providerName,
+            model: parsed.model ?? null,
+            text: result.text,
+            usage: result.usage ?? null,
+          },
+          null,
+          2,
+        ),
+      );
+    } else {
+      write(result.text);
+      if (!result.text.endsWith("\n")) write("\n");
+    }
+    return { ok: true, text: result.text };
+  } catch (caught) {
+    const msg = caught instanceof Error ? caught.message : String(caught);
+    if (opts.json) err(JSON.stringify({ ok: false, error: msg }, null, 2));
+    else err(`\x1b[31mError:\x1b[0m ${msg}`);
+    exit(1);
+    return { ok: false, error: msg };
+  }
+}
+
+async function runAiSdkCommand(
+  providerName: string,
+  rawArgs: string[],
+  opts: { json?: boolean },
+): Promise<void> {
+  const registry = hostServicesRef?.serviceRegistry;
+  await runAiSdkCore(providerName, rawArgs, opts, {
+    getAiProvider: (name) =>
+      registry?.getProviderByName<AIProviderRunCapable>("ai", name),
+  });
+}
 
 function registerStatusContributors(hostServices?: HostServices): void {
   const reg = hostServices?.cliContributors;
