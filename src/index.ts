@@ -84,6 +84,28 @@ interface RegisteredAIProvider {
   getPrereqApiPrefix?: () => string;
 }
 
+export interface CliContributorRegistryLike {
+  addStatusSection(section: {
+    source: string;
+    title: string;
+    render: (ctx: { agentUrl: string }) => Promise<string | null>;
+    json?: (ctx: { agentUrl: string }) => Promise<unknown>;
+    jsonKey?: string;
+  }): void;
+  addDoctorCheck(check: {
+    source: string;
+    run: () => Promise<
+      Array<{
+        name: string;
+        ok: boolean;
+        grade?: "warn";
+        message: string;
+        hint?: string;
+      }>
+    >;
+  }): void;
+}
+
 export interface HostServices {
   logger?: {
     info: (source: string, msg: string) => void;
@@ -105,6 +127,7 @@ export interface HostServices {
       isDefault: boolean;
     }>;
   };
+  cliContributors?: CliContributorRegistryLike;
 }
 
 export interface VibePlugin {
@@ -644,7 +667,8 @@ export const vibePlugin: VibePlugin = {
     hostServicesRef = null;
   },
 
-  onCliSetup(program: Command, _hostServices?: HostServices) {
+  onCliSetup(program: Command, hostServices?: HostServices) {
+    registerStatusContributors(hostServices);
     const aiCmd = program
       .command("ai")
       .description(
@@ -1524,5 +1548,99 @@ export const vibePlugin: VibePlugin = {
       });
   },
 };
+
+function registerStatusContributors(hostServices?: HostServices): void {
+  const reg = hostServices?.cliContributors;
+  if (!reg) return; // older agent without contributor registry — graceful no-op
+
+  reg.addStatusSection({
+    source: "ai",
+    title: "AI",
+    render: async ({ agentUrl }) => {
+      try {
+        const res = await fetch(`${agentUrl}/api/ai/sessions`);
+        if (!res.ok) return null;
+        const data = (await res.json()) as unknown;
+        const list = Array.isArray(data)
+          ? data
+          : Array.isArray((data as { sessions?: unknown[] })?.sessions)
+            ? ((data as { sessions: unknown[] }).sessions as unknown[])
+            : [];
+        if (list.length === 0) return "\x1b[2m(none)\x1b[22m";
+        const providers = new Set<string>();
+        for (const item of list) {
+          const p = (item as { provider?: string; agentType?: string })
+            ?.provider ??
+            (item as { agentType?: string })?.agentType;
+          if (p) providers.add(p);
+        }
+        const providerList =
+          providers.size > 0 ? ` (${[...providers].join(", ")})` : "";
+        return `\x1b[32m${list.length} active\x1b[39m${providerList}`;
+      } catch {
+        return null;
+      }
+    },
+    json: async ({ agentUrl }) => {
+      try {
+        const res = await fetch(`${agentUrl}/api/ai/sessions`);
+        if (!res.ok) return null;
+        return await res.json();
+      } catch {
+        return null;
+      }
+    },
+    jsonKey: "ai",
+  });
+
+  reg.addDoctorCheck({
+    source: "ai",
+    run: async () => {
+      try {
+        const port = (process.env.AGENT_URL ?? "http://localhost:3005").replace(
+          /\/+$/,
+          "",
+        );
+        const res = await fetch(`${port}/api/ai/providers`);
+        if (!res.ok) {
+          return [
+            {
+              name: "AI providers",
+              ok: false,
+              grade: "warn" as const,
+              message: `/api/ai/providers returned ${res.status}`,
+            },
+          ];
+        }
+        const body = (await res.json()) as unknown;
+        const list = Array.isArray(body)
+          ? body
+          : Array.isArray((body as { providers?: unknown[] })?.providers)
+            ? ((body as { providers: unknown[] }).providers as unknown[])
+            : [];
+        if (list.length === 0) {
+          return [
+            {
+              name: "AI providers",
+              ok: false,
+              grade: "warn" as const,
+              message: "no AI providers configured",
+              hint: "Install one, e.g. `vibe plugin install @vibecontrols/vibe-plugin-ai-claude`.",
+            },
+          ];
+        }
+        return [
+          {
+            name: "AI providers",
+            ok: true,
+            message: `${list.length} provider(s) configured`,
+          },
+        ];
+      } catch {
+        return [];
+      }
+    },
+  });
+}
 
 export default vibePlugin;
