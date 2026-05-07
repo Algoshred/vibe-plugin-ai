@@ -1,5 +1,15 @@
 import type { Command } from "commander";
 import { Elysia } from "elysia";
+import {
+  runMultimode,
+  pickOutputMode,
+  maybePrintJson,
+} from "./utils/multimode.js";
+import {
+  interactiveTable,
+  interactiveDetail,
+  type TableRow,
+} from "./utils/interactive.js";
 import { PromptDatabase } from "./db/prompts.js";
 import { ContextDatabase } from "./db/contexts.js";
 import { SessionDatabase } from "./db/sessions.js";
@@ -213,6 +223,26 @@ const AI_TOOLS: AiTool[] = [
 // ── Helper Functions ─────────────────────────────────────────────────────
 
 import { join } from "node:path";
+
+const SECRET_KEY_RE = /(token|secret|password|apikey|api_key)/i;
+
+function redactSecrets<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value.map((v) => redactSecrets(v)) as unknown as T;
+  }
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      if (SECRET_KEY_RE.test(k)) {
+        out[k] = "[redacted]";
+      } else {
+        out[k] = redactSecrets(v);
+      }
+    }
+    return out as unknown as T;
+  }
+  return value;
+}
 
 function isToolInstalled(tool: AiTool): {
   installed: boolean;
@@ -630,25 +660,90 @@ export const vibePlugin: VibePlugin = {
         "Project directory to check configs",
         process.cwd(),
       )
-      .action((options: { cwd: string }) => {
-        console.log("\n  \x1b[1m── AI Tools ──\x1b[0m\n");
-        for (const tool of AI_TOOLS) {
-          const { installed, version } = isToolInstalled(tool);
-          const icon = installed ? "\x1b[32m✓\x1b[0m" : "\x1b[31m✗\x1b[0m";
-          const versionStr = installed ? ` (${version.split("\n")[0]})` : "";
-          console.log(
-            `  ${icon} \x1b[1m${tool.displayName}\x1b[0m${versionStr}`,
-          );
-          console.log(`    ${tool.description}`);
-          const configs = findConfigFiles(tool, options.cwd);
-          console.log(
-            configs.length > 0
-              ? `    Config: ${configs.join(", ")}`
-              : "    Config: (none found)",
-          );
-          console.log();
-        }
-      });
+      .option("--json", "Emit JSON")
+      .option("--plain", "Force plain text output")
+      .action(
+        async (options: { cwd: string; json?: boolean; plain?: boolean }) => {
+          interface ToolRow {
+            tool: AiTool;
+            installed: boolean;
+            version: string;
+            configs: string[];
+          }
+          await runMultimode<ToolRow[]>({
+            mode: pickOutputMode(options),
+            fetchData: () =>
+              AI_TOOLS.map((tool) => {
+                const { installed, version } = isToolInstalled(tool);
+                const configs = findConfigFiles(tool, options.cwd);
+                return { tool, installed, version, configs };
+              }),
+            plain: (rows) => {
+              console.log("\n  \x1b[1m── AI Tools ──\x1b[0m\n");
+              for (const { tool, installed, version, configs } of rows) {
+                const icon = installed
+                  ? "\x1b[32m✓\x1b[0m"
+                  : "\x1b[31m✗\x1b[0m";
+                const versionStr = installed
+                  ? ` (${version.split("\n")[0]})`
+                  : "";
+                console.log(
+                  `  ${icon} \x1b[1m${tool.displayName}\x1b[0m${versionStr}`,
+                );
+                console.log(`    ${tool.description}`);
+                console.log(
+                  configs.length > 0
+                    ? `    Config: ${configs.join(", ")}`
+                    : "    Config: (none found)",
+                );
+                console.log();
+              }
+            },
+            interactive: async (rows) => {
+              const tableRows: TableRow[] = rows.map(
+                ({ tool, installed, version, configs }) => ({
+                  id: tool.name,
+                  label: tool.displayName,
+                  hint: installed
+                    ? `installed${version ? " " + version.split("\n")[0] : ""}`
+                    : "not installed",
+                  detail: [
+                    `\x1b[1m${tool.displayName}\x1b[0m`,
+                    "",
+                    `  Status:    ${installed ? "installed" : "not installed"}`,
+                    `  Version:   ${installed ? version.split("\n")[0] : "-"}`,
+                    `  Detect:    ${tool.detectCommand}`,
+                    `  Install:   ${tool.installCommand ?? "(manual)"}`,
+                    `  Configs:   ${tool.configFiles.join(", ")}`,
+                    `  Found:     ${configs.length > 0 ? configs.join(", ") : "(none)"}`,
+                    "",
+                    `  ${tool.description}`,
+                  ].join("\n"),
+                }),
+              );
+              await interactiveTable({
+                title: `vibe ai list — ${rows.length} tool(s)`,
+                rows: tableRows,
+                footer: "↑/↓ navigate · q to quit",
+              });
+            },
+            json: (rows) =>
+              redactSecrets(
+                rows.map(({ tool, installed, version, configs }) => ({
+                  name: tool.name,
+                  displayName: tool.displayName,
+                  description: tool.description,
+                  installed,
+                  version: installed ? version.split("\n")[0] : "",
+                  detectCommand: tool.detectCommand,
+                  installCommand: tool.installCommand ?? null,
+                  configFiles: tool.configFiles,
+                  foundConfigs: configs,
+                })),
+              ),
+          });
+        },
+      );
 
     // ── vibe ai install <tool> ──────────────────────────────────────
     aiCmd
@@ -658,34 +753,91 @@ export const vibePlugin: VibePlugin = {
         "<tool>",
         `Tool name (${AI_TOOLS.map((t) => t.name).join(", ")})`,
       )
-      .action((toolName: string) => {
+      .option("--json", "Emit JSON result")
+      .action((toolName: string, options: { json?: boolean }) => {
         const tool = AI_TOOLS.find((t) => t.name === toolName);
         if (!tool) {
+          if (
+            maybePrintJson(options, {
+              ok: false,
+              action: "install",
+              tool: toolName,
+              error: `Unknown tool '${toolName}'`,
+              available: AI_TOOLS.map((t) => t.name),
+            })
+          ) {
+            process.exit(1);
+          }
           console.error(
             `\x1b[31mError:\x1b[0m Unknown tool '${toolName}'. Available: ${AI_TOOLS.map((t) => t.name).join(", ")}`,
           );
           process.exit(1);
         }
         if (!tool.installCommand) {
+          if (
+            maybePrintJson(options, {
+              ok: false,
+              action: "install",
+              tool: tool.name,
+              error: `'${tool.displayName}' must be installed manually.`,
+            })
+          ) {
+            process.exit(1);
+          }
           console.error(
             `\x1b[31mError:\x1b[0m '${tool.displayName}' must be installed manually.`,
           );
           process.exit(1);
         }
-        const { installed } = isToolInstalled(tool);
-        if (installed) {
+        const { installed: alreadyInstalled, version } = isToolInstalled(tool);
+        if (alreadyInstalled) {
+          if (
+            maybePrintJson(options, {
+              ok: true,
+              action: "install",
+              tool: tool.name,
+              alreadyInstalled: true,
+              version: version.split("\n")[0],
+            })
+          ) {
+            return;
+          }
           console.log(
             `  \x1b[32m✓ ${tool.displayName} is already installed.\x1b[0m`,
           );
           return;
         }
-        console.log(`  Installing ${tool.displayName}...`);
+        if (!options.json) {
+          console.log(`  Installing ${tool.displayName}...`);
+        }
         const success = runInstallCommand(tool.installCommand);
         if (success) {
+          if (
+            maybePrintJson(options, {
+              ok: true,
+              action: "install",
+              tool: tool.name,
+              alreadyInstalled: false,
+              installCommand: tool.installCommand,
+            })
+          ) {
+            return;
+          }
           console.log(
             `\n  \x1b[32m✓ ${tool.displayName} installed successfully.\x1b[0m\n`,
           );
         } else {
+          if (
+            maybePrintJson(options, {
+              ok: false,
+              action: "install",
+              tool: tool.name,
+              error: `Failed to install ${tool.displayName}`,
+              installCommand: tool.installCommand,
+            })
+          ) {
+            process.exit(1);
+          }
           console.error(
             `\n  \x1b[31m✗ Failed to install ${tool.displayName}.\x1b[0m`,
           );
@@ -700,58 +852,154 @@ export const vibePlugin: VibePlugin = {
       .description("Initialize AI tool config in the current project")
       .argument("<tool>", "Tool name")
       .option("--cwd <dir>", "Project directory", process.cwd())
-      .action(async (toolName: string, options: { cwd: string }) => {
-        const tool = AI_TOOLS.find((t) => t.name === toolName);
-        if (!tool) {
-          console.error(`\x1b[31mError:\x1b[0m Unknown tool '${toolName}'.`);
-          process.exit(1);
-        }
-        const dir = options.cwd;
-        const primaryConfig = tool.configFiles[0];
-        const configPath = join(dir, primaryConfig);
-        try {
-          if (Bun.file(configPath).size >= 0) {
-            console.log(
-              `  \x1b[33m⚠\x1b[0m  ${primaryConfig} already exists in ${dir}`,
-            );
+      .option("--json", "Emit JSON result")
+      .action(
+        async (
+          toolName: string,
+          options: { cwd: string; json?: boolean },
+        ) => {
+          const tool = AI_TOOLS.find((t) => t.name === toolName);
+          if (!tool) {
+            if (
+              maybePrintJson(options, {
+                ok: false,
+                action: "init",
+                tool: toolName,
+                error: `Unknown tool '${toolName}'`,
+              })
+            ) {
+              process.exit(1);
+            }
+            console.error(`\x1b[31mError:\x1b[0m Unknown tool '${toolName}'.`);
+            process.exit(1);
+          }
+          const dir = options.cwd;
+          const primaryConfig = tool.configFiles[0];
+          const configPath = join(dir, primaryConfig);
+          try {
+            if (Bun.file(configPath).size >= 0) {
+              if (
+                maybePrintJson(options, {
+                  ok: true,
+                  action: "init",
+                  tool: tool.name,
+                  alreadyExists: true,
+                  configFile: primaryConfig,
+                  directory: dir,
+                })
+              ) {
+                return;
+              }
+              console.log(
+                `  \x1b[33m⚠\x1b[0m  ${primaryConfig} already exists in ${dir}`,
+              );
+              return;
+            }
+          } catch {
+            // File doesn't exist — proceed
+          }
+          const { mkdirSync } = await import("node:fs");
+          const segments = primaryConfig.split("/");
+          if (segments.length > 1) {
+            mkdirSync(join(dir, ...segments.slice(0, -1)), { recursive: true });
+          }
+          const content = generateStarterConfig(tool);
+          await Bun.write(configPath, content);
+          if (
+            maybePrintJson(options, {
+              ok: true,
+              action: "init",
+              tool: tool.name,
+              alreadyExists: false,
+              configFile: primaryConfig,
+              directory: dir,
+            })
+          ) {
             return;
           }
-        } catch {
-          // File doesn't exist — proceed
-        }
-        const { mkdirSync } = await import("node:fs");
-        const segments = primaryConfig.split("/");
-        if (segments.length > 1) {
-          mkdirSync(join(dir, ...segments.slice(0, -1)), { recursive: true });
-        }
-        const content = generateStarterConfig(tool);
-        await Bun.write(configPath, content);
-        console.log(
-          `\n  \x1b[32m✓ Created ${primaryConfig}\x1b[0m in ${dir}\n`,
-        );
-      });
+          console.log(
+            `\n  \x1b[32m✓ Created ${primaryConfig}\x1b[0m in ${dir}\n`,
+          );
+        },
+      );
 
     // ── vibe ai check ───────────────────────────────────────────────
     aiCmd
       .command("check")
       .description("Check which AI tools are installed")
-      .action(() => {
-        console.log("\n  \x1b[1m── AI Tool Check ──\x1b[0m\n");
-        let allInstalled = true;
-        for (const tool of AI_TOOLS) {
-          const { installed, version } = isToolInstalled(tool);
-          const icon = installed ? "\x1b[32m✓\x1b[0m" : "\x1b[31m✗\x1b[0m";
-          console.log(
-            `  ${icon} ${tool.displayName.padEnd(20)} ${installed ? version.split("\n")[0] : "not installed"}`,
-          );
-          if (!installed) allInstalled = false;
+      .option("--json", "Emit JSON")
+      .option("--plain", "Force plain text output")
+      .action(async (options: { json?: boolean; plain?: boolean }) => {
+        interface CheckRow {
+          tool: AiTool;
+          installed: boolean;
+          version: string;
         }
-        console.log();
-        if (!allInstalled) {
-          console.log(
-            "  Install missing tools: \x1b[1mvibe ai install <tool>\x1b[0m\n",
-          );
-        }
+        await runMultimode<CheckRow[]>({
+          mode: pickOutputMode(options),
+          fetchData: () =>
+            AI_TOOLS.map((tool) => {
+              const { installed, version } = isToolInstalled(tool);
+              return { tool, installed, version };
+            }),
+          plain: (rows) => {
+            console.log("\n  \x1b[1m── AI Tool Check ──\x1b[0m\n");
+            let allInstalled = true;
+            for (const { tool, installed, version } of rows) {
+              const icon = installed
+                ? "\x1b[32m✓\x1b[0m"
+                : "\x1b[31m✗\x1b[0m";
+              console.log(
+                `  ${icon} ${tool.displayName.padEnd(20)} ${installed ? version.split("\n")[0] : "not installed"}`,
+              );
+              if (!installed) allInstalled = false;
+            }
+            console.log();
+            if (!allInstalled) {
+              console.log(
+                "  Install missing tools: \x1b[1mvibe ai install <tool>\x1b[0m\n",
+              );
+            }
+          },
+          interactive: async (rows) => {
+            const tableRows: TableRow[] = rows.map(
+              ({ tool, installed, version }) => ({
+                id: tool.name,
+                label: tool.displayName,
+                hint: installed ? "ok" : "fail",
+                detail: [
+                  `\x1b[1m${tool.displayName}\x1b[0m`,
+                  "",
+                  `  Status:    ${installed ? "ok (installed)" : "fail (not installed)"}`,
+                  `  Version:   ${installed ? version.split("\n")[0] : "-"}`,
+                  `  Detect:    ${tool.detectCommand}`,
+                  `  Install:   ${tool.installCommand ?? "(manual)"}`,
+                  "",
+                  installed
+                    ? "  All good."
+                    : `  Run: vibe ai install ${tool.name}`,
+                ].join("\n"),
+              }),
+            );
+            await interactiveTable({
+              title: `vibe ai check — ${rows.filter((r) => r.installed).length}/${rows.length} installed`,
+              rows: tableRows,
+              footer: "↑/↓ navigate · q to quit",
+            });
+          },
+          json: (rows) =>
+            redactSecrets({
+              ok: rows.every((r) => r.installed),
+              checks: rows.map(({ tool, installed, version }) => ({
+                name: tool.name,
+                displayName: tool.displayName,
+                installed,
+                ok: installed,
+                version: installed ? version.split("\n")[0] : null,
+                message: installed ? "installed" : "not installed",
+              })),
+            }),
+        });
       });
 
     // ── vibe ai prompts ─────────────────────────────────────────────
@@ -765,48 +1013,102 @@ export const vibePlugin: VibePlugin = {
       .option("--shared", "Show only shared prompts")
       .option("--category <cat>", "Filter by category")
       .option("--limit <n>", "Max results", "20")
+      .option("--json", "Emit JSON")
+      .option("--plain", "Force plain text output")
       .action(
-        (options: { shared?: boolean; category?: string; limit: string }) => {
-          const db = getPromptDb();
-          const result = db.list(
-            {
-              isShared:
-                options.shared !== undefined ? options.shared : undefined,
-              category: options.category as Parameters<
-                typeof db.list
-              >[0] extends { category?: infer C }
-                ? C
-                : undefined,
+        async (options: {
+          shared?: boolean;
+          category?: string;
+          limit: string;
+          json?: boolean;
+          plain?: boolean;
+        }) => {
+          await runMultimode<ReturnType<PromptDatabase["list"]>>({
+            mode: pickOutputMode(options),
+            fetchData: () => {
+              const db = getPromptDb();
+              return db.list(
+                {
+                  isShared:
+                    options.shared !== undefined ? options.shared : undefined,
+                  category: options.category as Parameters<
+                    typeof db.list
+                  >[0] extends { category?: infer C }
+                    ? C
+                    : undefined,
+                },
+                { limit: parseInt(options.limit, 10) },
+              );
             },
-            { limit: parseInt(options.limit, 10) },
-          );
-          if (result.items.length === 0) {
-            console.log("\n  No prompts found.\n");
-            return;
-          }
-          console.log(`\n  \x1b[1m── Prompts (${result.total}) ──\x1b[0m\n`);
-          for (const prompt of result.items) {
-            const shared = prompt.isShared ? " \x1b[36m[shared]\x1b[0m" : "";
-            const tags =
-              prompt.tags.length > 0
-                ? ` \x1b[33m[${prompt.tags.join(", ")}]\x1b[0m`
-                : "";
-            const uses =
-              prompt.usageCount > 0
-                ? ` \x1b[90m(${prompt.usageCount} uses)\x1b[0m`
-                : "";
-            console.log(
-              `  \x1b[1m${prompt.name}\x1b[0m${shared}${tags}${uses}`,
-            );
-            const preview = prompt.content
-              .replace(/\n/g, " ")
-              .slice(0, 60)
-              .trim();
-            console.log(
-              `    ${preview}${prompt.content.length > 60 ? "..." : ""}`,
-            );
-            console.log();
-          }
+            plain: (result) => {
+              if (result.items.length === 0) {
+                console.log("\n  No prompts found.\n");
+                return;
+              }
+              console.log(
+                `\n  \x1b[1m── Prompts (${result.total}) ──\x1b[0m\n`,
+              );
+              for (const prompt of result.items) {
+                const shared = prompt.isShared
+                  ? " \x1b[36m[shared]\x1b[0m"
+                  : "";
+                const tags =
+                  prompt.tags.length > 0
+                    ? ` \x1b[33m[${prompt.tags.join(", ")}]\x1b[0m`
+                    : "";
+                const uses =
+                  prompt.usageCount > 0
+                    ? ` \x1b[90m(${prompt.usageCount} uses)\x1b[0m`
+                    : "";
+                console.log(
+                  `  \x1b[1m${prompt.name}\x1b[0m${shared}${tags}${uses}`,
+                );
+                const preview = prompt.content
+                  .replace(/\n/g, " ")
+                  .slice(0, 60)
+                  .trim();
+                console.log(
+                  `    ${preview}${prompt.content.length > 60 ? "..." : ""}`,
+                );
+                console.log();
+              }
+            },
+            interactive: async (result) => {
+              if (result.items.length === 0) {
+                console.log("\n  No prompts found.\n");
+                return;
+              }
+              const tableRows: TableRow[] = result.items.map((prompt) => ({
+                id: prompt.id,
+                label: prompt.name,
+                hint: [
+                  prompt.isShared ? "shared" : null,
+                  prompt.category ?? null,
+                  prompt.usageCount > 0 ? `${prompt.usageCount} uses` : null,
+                ]
+                  .filter(Boolean)
+                  .join(" · "),
+                detail: [
+                  `\x1b[1m${prompt.name}\x1b[0m`,
+                  "",
+                  `  ID:        ${prompt.id}`,
+                  `  Shared:    ${prompt.isShared ? "yes" : "no"}`,
+                  `  Category:  ${prompt.category ?? "-"}`,
+                  `  Tags:      ${prompt.tags.length > 0 ? prompt.tags.join(", ") : "-"}`,
+                  `  Variables: ${prompt.variables.length > 0 ? prompt.variables.map((v) => `{{${v}}}`).join(", ") : "-"}`,
+                  `  Uses:      ${prompt.usageCount}`,
+                  "",
+                  prompt.content,
+                ].join("\n"),
+              }));
+              await interactiveTable({
+                title: `vibe ai prompts list — ${result.total} prompt(s)`,
+                rows: tableRows,
+                footer: "↑/↓ navigate · q to quit",
+              });
+            },
+            json: (result) => redactSecrets(result),
+          });
         },
       );
 
@@ -815,58 +1117,128 @@ export const vibePlugin: VibePlugin = {
       .description("Search prompts")
       .argument("<query>", "Search query")
       .option("--limit <n>", "Max results", "10")
-      .action((query: string, options: { limit: string }) => {
-        const db = getPromptDb();
-        const results = db.search(
-          query,
-          undefined,
-          parseInt(options.limit, 10),
-        );
-        if (results.length === 0) {
-          console.log(`\n  No prompts matching "${query}".\n`);
-          return;
-        }
-        console.log(
-          `\n  \x1b[1m── Search: "${query}" (${results.length} results) ──\x1b[0m\n`,
-        );
-        for (const prompt of results) {
-          console.log(
-            `  \x1b[1m${prompt.name}\x1b[0m \x1b[90m(${prompt.usageCount} uses)\x1b[0m`,
-          );
-          const preview = prompt.content
-            .replace(/\n/g, " ")
-            .slice(0, 60)
-            .trim();
-          console.log(
-            `    ${preview}${prompt.content.length > 60 ? "..." : ""}`,
-          );
-          console.log();
-        }
-      });
+      .option("--json", "Emit JSON")
+      .option("--plain", "Force plain text output")
+      .action(
+        async (
+          query: string,
+          options: { limit: string; json?: boolean; plain?: boolean },
+        ) => {
+          await runMultimode<ReturnType<PromptDatabase["search"]>>({
+            mode: pickOutputMode(options),
+            fetchData: () => {
+              const db = getPromptDb();
+              return db.search(query, undefined, parseInt(options.limit, 10));
+            },
+            plain: (results) => {
+              if (results.length === 0) {
+                console.log(`\n  No prompts matching "${query}".\n`);
+                return;
+              }
+              console.log(
+                `\n  \x1b[1m── Search: "${query}" (${results.length} results) ──\x1b[0m\n`,
+              );
+              for (const prompt of results) {
+                console.log(
+                  `  \x1b[1m${prompt.name}\x1b[0m \x1b[90m(${prompt.usageCount} uses)\x1b[0m`,
+                );
+                const preview = prompt.content
+                  .replace(/\n/g, " ")
+                  .slice(0, 60)
+                  .trim();
+                console.log(
+                  `    ${preview}${prompt.content.length > 60 ? "..." : ""}`,
+                );
+                console.log();
+              }
+            },
+            interactive: async (results) => {
+              if (results.length === 0) {
+                console.log(`\n  No prompts matching "${query}".\n`);
+                return;
+              }
+              const tableRows: TableRow[] = results.map((prompt) => ({
+                id: prompt.id,
+                label: prompt.name,
+                hint: `${prompt.usageCount} uses`,
+                detail: [
+                  `\x1b[1m${prompt.name}\x1b[0m`,
+                  "",
+                  `  ID:    ${prompt.id}`,
+                  `  Uses:  ${prompt.usageCount}`,
+                  `  Tags:  ${prompt.tags.length > 0 ? prompt.tags.join(", ") : "-"}`,
+                  "",
+                  prompt.content,
+                ].join("\n"),
+              }));
+              await interactiveTable({
+                title: `vibe ai prompts search "${query}" — ${results.length} match(es)`,
+                rows: tableRows,
+                footer: "↑/↓ navigate · q to quit",
+              });
+            },
+            json: (results) => redactSecrets({ query, results }),
+          });
+        },
+      );
 
     promptsCmd
       .command("show")
       .description("Show a prompt by ID")
       .argument("<id>", "Prompt ID")
-      .action((id: string) => {
-        const db = getPromptDb();
-        const prompt = db.getById(id);
-        if (!prompt) {
-          console.error(`\x1b[31mError:\x1b[0m Prompt not found: ${id}`);
-          process.exit(1);
-        }
-        console.log(`\n  \x1b[1m${prompt.name}\x1b[0m`);
-        if (prompt.tags.length > 0)
-          console.log(`  Tags: ${prompt.tags.join(", ")}`);
-        if (prompt.variables.length > 0)
-          console.log(
-            `  Variables: ${prompt.variables.map((v) => `{{${v}}}`).join(", ")}`,
-          );
-        console.log(
-          `  Shared: ${prompt.isShared ? "yes" : "no"} | Uses: ${prompt.usageCount}`,
-        );
-        console.log(`\n${prompt.content}\n`);
-      });
+      .option("--json", "Emit JSON")
+      .option("--plain", "Force plain text output")
+      .action(
+        async (
+          id: string,
+          options: { json?: boolean; plain?: boolean },
+        ) => {
+          await runMultimode<ReturnType<PromptDatabase["getById"]>>({
+            mode: pickOutputMode(options),
+            fetchData: () => {
+              const db = getPromptDb();
+              const prompt = db.getById(id);
+              if (!prompt) {
+                console.error(`\x1b[31mError:\x1b[0m Prompt not found: ${id}`);
+                process.exit(1);
+              }
+              return prompt;
+            },
+            plain: (prompt) => {
+              if (!prompt) return;
+              console.log(`\n  \x1b[1m${prompt.name}\x1b[0m`);
+              if (prompt.tags.length > 0)
+                console.log(`  Tags: ${prompt.tags.join(", ")}`);
+              if (prompt.variables.length > 0)
+                console.log(
+                  `  Variables: ${prompt.variables.map((v) => `{{${v}}}`).join(", ")}`,
+                );
+              console.log(
+                `  Shared: ${prompt.isShared ? "yes" : "no"} | Uses: ${prompt.usageCount}`,
+              );
+              console.log(`\n${prompt.content}\n`);
+            },
+            interactive: async (prompt) => {
+              if (!prompt) return;
+              await interactiveDetail({
+                title: `vibe ai prompts show — ${prompt.name}`,
+                body: [
+                  `\x1b[1m${prompt.name}\x1b[0m`,
+                  "",
+                  `  ID:        ${prompt.id}`,
+                  `  Shared:    ${prompt.isShared ? "yes" : "no"}`,
+                  `  Tags:      ${prompt.tags.length > 0 ? prompt.tags.join(", ") : "-"}`,
+                  `  Variables: ${prompt.variables.length > 0 ? prompt.variables.map((v) => `{{${v}}}`).join(", ") : "-"}`,
+                  `  Uses:      ${prompt.usageCount}`,
+                  "",
+                  prompt.content,
+                ].join("\n"),
+              });
+            },
+            json: (prompt) => redactSecrets(prompt),
+          });
+        },
+      );
 
     // ── vibe ai contexts ────────────────────────────────────────────
     const contextsCmd = aiCmd
@@ -878,48 +1250,133 @@ export const vibePlugin: VibePlugin = {
       .description("List all contexts")
       .option("--type <type>", "Filter by type")
       .option("--limit <n>", "Max results", "20")
-      .action((options: { type?: string; limit: string }) => {
-        const db = getContextDb();
-        const result = db.list(
-          options.type ? { type: options.type as any } : undefined,
-          { limit: parseInt(options.limit, 10) },
-        );
-        if (result.items.length === 0) {
-          console.log("\n  No contexts found.\n");
-          return;
-        }
-        console.log(`\n  \x1b[1m── Contexts (${result.total}) ──\x1b[0m\n`);
-        for (const ctx of result.items) {
-          const tags =
-            ctx.tags.length > 0
-              ? ` \x1b[33m[${ctx.tags.join(", ")}]\x1b[0m`
-              : "";
-          console.log(
-            `  \x1b[1m${ctx.name}\x1b[0m \x1b[90m(${ctx.type})\x1b[0m${tags}`,
-          );
-          const preview = ctx.content.replace(/\n/g, " ").slice(0, 60).trim();
-          console.log(`    ${preview}${ctx.content.length > 60 ? "..." : ""}`);
-          console.log();
-        }
-      });
+      .option("--json", "Emit JSON")
+      .option("--plain", "Force plain text output")
+      .action(
+        async (options: {
+          type?: string;
+          limit: string;
+          json?: boolean;
+          plain?: boolean;
+        }) => {
+          await runMultimode<ReturnType<ContextDatabase["list"]>>({
+            mode: pickOutputMode(options),
+            fetchData: () => {
+              const db = getContextDb();
+              return db.list(
+                options.type
+                  ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                    { type: options.type as any }
+                  : undefined,
+                { limit: parseInt(options.limit, 10) },
+              );
+            },
+            plain: (result) => {
+              if (result.items.length === 0) {
+                console.log("\n  No contexts found.\n");
+                return;
+              }
+              console.log(
+                `\n  \x1b[1m── Contexts (${result.total}) ──\x1b[0m\n`,
+              );
+              for (const ctx of result.items) {
+                const tags =
+                  ctx.tags.length > 0
+                    ? ` \x1b[33m[${ctx.tags.join(", ")}]\x1b[0m`
+                    : "";
+                console.log(
+                  `  \x1b[1m${ctx.name}\x1b[0m \x1b[90m(${ctx.type})\x1b[0m${tags}`,
+                );
+                const preview = ctx.content
+                  .replace(/\n/g, " ")
+                  .slice(0, 60)
+                  .trim();
+                console.log(
+                  `    ${preview}${ctx.content.length > 60 ? "..." : ""}`,
+                );
+                console.log();
+              }
+            },
+            interactive: async (result) => {
+              if (result.items.length === 0) {
+                console.log("\n  No contexts found.\n");
+                return;
+              }
+              const tableRows: TableRow[] = result.items.map((ctx) => ({
+                id: ctx.id,
+                label: ctx.name,
+                hint: ctx.type,
+                detail: [
+                  `\x1b[1m${ctx.name}\x1b[0m`,
+                  "",
+                  `  ID:    ${ctx.id}`,
+                  `  Type:  ${ctx.type}`,
+                  `  Tags:  ${ctx.tags.length > 0 ? ctx.tags.join(", ") : "-"}`,
+                  "",
+                  ctx.content,
+                ].join("\n"),
+              }));
+              await interactiveTable({
+                title: `vibe ai contexts list — ${result.total} context(s)`,
+                rows: tableRows,
+                footer: "↑/↓ navigate · q to quit",
+              });
+            },
+            json: (result) => redactSecrets(result),
+          });
+        },
+      );
 
     contextsCmd
       .command("show")
       .description("Show a context by ID")
       .argument("<id>", "Context ID")
-      .action((id: string) => {
-        const db = getContextDb();
-        const ctx = db.getById(id);
-        if (!ctx) {
-          console.error(`\x1b[31mError:\x1b[0m Context not found: ${id}`);
-          process.exit(1);
-        }
-        console.log(
-          `\n  \x1b[1m${ctx.name}\x1b[0m \x1b[90m(${ctx.type})\x1b[0m`,
-        );
-        if (ctx.tags.length > 0) console.log(`  Tags: ${ctx.tags.join(", ")}`);
-        console.log(`\n${ctx.content}\n`);
-      });
+      .option("--json", "Emit JSON")
+      .option("--plain", "Force plain text output")
+      .action(
+        async (
+          id: string,
+          options: { json?: boolean; plain?: boolean },
+        ) => {
+          await runMultimode<ReturnType<ContextDatabase["getById"]>>({
+            mode: pickOutputMode(options),
+            fetchData: () => {
+              const db = getContextDb();
+              const ctx = db.getById(id);
+              if (!ctx) {
+                console.error(`\x1b[31mError:\x1b[0m Context not found: ${id}`);
+                process.exit(1);
+              }
+              return ctx;
+            },
+            plain: (ctx) => {
+              if (!ctx) return;
+              console.log(
+                `\n  \x1b[1m${ctx.name}\x1b[0m \x1b[90m(${ctx.type})\x1b[0m`,
+              );
+              if (ctx.tags.length > 0)
+                console.log(`  Tags: ${ctx.tags.join(", ")}`);
+              console.log(`\n${ctx.content}\n`);
+            },
+            interactive: async (ctx) => {
+              if (!ctx) return;
+              await interactiveDetail({
+                title: `vibe ai contexts show — ${ctx.name}`,
+                body: [
+                  `\x1b[1m${ctx.name}\x1b[0m \x1b[90m(${ctx.type})\x1b[0m`,
+                  "",
+                  `  ID:    ${ctx.id}`,
+                  `  Type:  ${ctx.type}`,
+                  `  Tags:  ${ctx.tags.length > 0 ? ctx.tags.join(", ") : "-"}`,
+                  "",
+                  ctx.content,
+                ].join("\n"),
+              });
+            },
+            json: (ctx) => redactSecrets(ctx),
+          });
+        },
+      );
 
     // ── vibe ai sessions ────────────────────────────────────────────
     const sessionsCmd = aiCmd
@@ -930,56 +1387,140 @@ export const vibePlugin: VibePlugin = {
       .command("list")
       .description("List AI sessions")
       .option("--status <status>", "Filter by status")
-      .action((options: { status?: string }) => {
-        const db = getSessionDb();
-        const result = db.list(
-          options.status ? { status: options.status as any } : undefined,
-        );
-        if (result.items.length === 0) {
-          console.log("\n  No sessions found.\n");
-          return;
-        }
-        console.log(`\n  \x1b[1m── AI Sessions (${result.total}) ──\x1b[0m\n`);
-        for (const session of result.items) {
-          const statusColor =
-            session.status === "active"
-              ? "\x1b[32m"
-              : session.status === "error"
-                ? "\x1b[31m"
-                : "\x1b[33m";
-          console.log(
-            `  \x1b[1m${session.name}\x1b[0m ${statusColor}[${session.status}]\x1b[0m \x1b[90m(${session.agentType})\x1b[0m`,
-          );
-          console.log(`    ID: ${session.id} | Created: ${session.createdAt}`);
-          console.log();
-        }
-      });
+      .option("--json", "Emit JSON")
+      .option("--plain", "Force plain text output")
+      .action(
+        async (options: {
+          status?: string;
+          json?: boolean;
+          plain?: boolean;
+        }) => {
+          await runMultimode<ReturnType<SessionDatabase["list"]>>({
+            mode: pickOutputMode(options),
+            fetchData: () => {
+              const db = getSessionDb();
+              return db.list(
+                options.status
+                  ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                    { status: options.status as any }
+                  : undefined,
+              );
+            },
+            plain: (result) => {
+              if (result.items.length === 0) {
+                console.log("\n  No sessions found.\n");
+                return;
+              }
+              console.log(
+                `\n  \x1b[1m── AI Sessions (${result.total}) ──\x1b[0m\n`,
+              );
+              for (const session of result.items) {
+                const statusColor =
+                  session.status === "active"
+                    ? "\x1b[32m"
+                    : session.status === "error"
+                      ? "\x1b[31m"
+                      : "\x1b[33m";
+                console.log(
+                  `  \x1b[1m${session.name}\x1b[0m ${statusColor}[${session.status}]\x1b[0m \x1b[90m(${session.agentType})\x1b[0m`,
+                );
+                console.log(
+                  `    ID: ${session.id} | Created: ${session.createdAt}`,
+                );
+                console.log();
+              }
+            },
+            interactive: async (result) => {
+              if (result.items.length === 0) {
+                console.log("\n  No sessions found.\n");
+                return;
+              }
+              const tableRows: TableRow[] = result.items.map((session) => ({
+                id: session.id,
+                label: session.name,
+                hint: `${session.status} · ${session.agentType}`,
+                detail: [
+                  `\x1b[1m${session.name}\x1b[0m`,
+                  "",
+                  `  ID:        ${session.id}`,
+                  `  Status:    ${session.status}`,
+                  `  Agent:     ${session.agentType}`,
+                  `  Created:   ${session.createdAt}`,
+                ].join("\n"),
+              }));
+              await interactiveTable({
+                title: `vibe ai sessions list — ${result.total} session(s)`,
+                rows: tableRows,
+                footer: "↑/↓ navigate · q to quit",
+              });
+            },
+            json: (result) => redactSecrets(result),
+          });
+        },
+      );
 
     // ── vibe ai stats ───────────────────────────────────────────────
     aiCmd
       .command("stats")
       .description("Show AI usage statistics")
-      .action(() => {
-        const sDb = getSessionDb();
-        const lDb = getLogDb();
-        const sessions = sDb.list(undefined, { limit: 1000 });
-
-        let totalInput = 0;
-        let totalOutput = 0;
-        for (const session of sessions.items) {
-          const stats = lDb.getSessionStats(session.id);
-          totalInput += stats.totalInputTokens;
-          totalOutput += stats.totalOutputTokens;
+      .option("--json", "Emit JSON")
+      .option("--plain", "Force plain text output")
+      .action(async (options: { json?: boolean; plain?: boolean }) => {
+        interface StatsShape {
+          total: number;
+          active: number;
+          totalInputTokens: number;
+          totalOutputTokens: number;
         }
-
-        console.log("\n  \x1b[1m── AI Usage Stats ──\x1b[0m\n");
-        console.log(`  Sessions:      ${sessions.total}`);
-        console.log(
-          `  Active:        ${sessions.items.filter((s) => s.status !== "terminated").length}`,
-        );
-        console.log(`  Input tokens:  ${totalInput.toLocaleString()}`);
-        console.log(`  Output tokens: ${totalOutput.toLocaleString()}`);
-        console.log();
+        await runMultimode<StatsShape>({
+          mode: pickOutputMode(options),
+          fetchData: () => {
+            const sDb = getSessionDb();
+            const lDb = getLogDb();
+            const sessions = sDb.list(undefined, { limit: 1000 });
+            let totalInput = 0;
+            let totalOutput = 0;
+            for (const session of sessions.items) {
+              const stats = lDb.getSessionStats(session.id);
+              totalInput += stats.totalInputTokens;
+              totalOutput += stats.totalOutputTokens;
+            }
+            return {
+              total: sessions.total,
+              active: sessions.items.filter(
+                (s) => s.status !== "terminated",
+              ).length,
+              totalInputTokens: totalInput,
+              totalOutputTokens: totalOutput,
+            };
+          },
+          plain: (stats) => {
+            console.log("\n  \x1b[1m── AI Usage Stats ──\x1b[0m\n");
+            console.log(`  Sessions:      ${stats.total}`);
+            console.log(`  Active:        ${stats.active}`);
+            console.log(
+              `  Input tokens:  ${stats.totalInputTokens.toLocaleString()}`,
+            );
+            console.log(
+              `  Output tokens: ${stats.totalOutputTokens.toLocaleString()}`,
+            );
+            console.log();
+          },
+          interactive: async (stats) => {
+            await interactiveDetail({
+              title: "vibe ai stats — AI Usage Statistics",
+              body: [
+                "\x1b[1mAI Usage Stats\x1b[0m",
+                "",
+                `  Sessions:      ${stats.total}`,
+                `  Active:        ${stats.active}`,
+                `  Input tokens:  ${stats.totalInputTokens.toLocaleString()}`,
+                `  Output tokens: ${stats.totalOutputTokens.toLocaleString()}`,
+              ].join("\n"),
+            });
+          },
+          json: (stats) => redactSecrets(stats),
+        });
       });
   },
 };
