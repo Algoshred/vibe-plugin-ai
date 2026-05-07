@@ -1,6 +1,6 @@
 {
   "name": "@vibecontrols/vibe-plugin-ai",
-  "version": "2026.508.1",
+  "version": "2026.508.2",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "type": "module",
@@ -38,9 +38,9 @@
     "url": "https://github.com/tvvignesh"
   },
   "license": "SEE LICENSE IN LICENSE",
-  "description": "AI tool management and prompt templates plugin for VibeControls Agent — manage AI tools, prompt templates with variables (Bun runtime)",
+  "description": "AI tool management and prompt templates plugin for VibeControls Agent \u2014 manage AI tools, prompt templates with variables (Bun runtime)",
   "dependencies": {
-    "elysia": "^1.3.0"
+    "elysia": "^1.4.26"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

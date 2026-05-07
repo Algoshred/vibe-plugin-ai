@@ -107,6 +107,9 @@ export interface CliContributorRegistryLike {
 }
 
 export interface HostServices {
+  telemetry?: {
+    emit: (name: string, payload?: Record<string, unknown>) => void;
+  };
   logger?: {
     info: (source: string, msg: string) => void;
     warn: (source: string, msg: string) => void;
@@ -130,7 +133,18 @@ export interface HostServices {
   cliContributors?: CliContributorRegistryLike;
 }
 
+export interface PluginCapabilities {
+  storage?: "none" | "read" | "rw";
+  secrets?: "none" | "read" | "rw";
+  gateway?: boolean;
+  broadcast?: boolean;
+  subprocess?: boolean;
+  audit?: boolean;
+  telemetry?: boolean;
+}
+
 export interface VibePlugin {
+  capabilities?: PluginCapabilities;
   name: string;
   version: string;
   description: string;
@@ -451,6 +465,15 @@ const logIngester = {
 // ── Plugin Export ────────────────────────────────────────────────────────
 
 export const vibePlugin: VibePlugin = {
+  capabilities: {
+    storage: "rw",
+    secrets: "read",
+    subprocess: true,
+    gateway: true,
+    broadcast: true,
+    audit: true,
+    telemetry: true,
+  },
   name: "ai",
   version: "4.0.0",
   description:
@@ -565,6 +588,7 @@ export const vibePlugin: VibePlugin = {
   },
 
   async onServerStart(_app, hostServices) {
+    hostServices?.telemetry?.emit("ai.meta.ready", {});
     hostServicesRef = hostServices || null;
 
     // Hydrate all KV tables from the agent's encrypted storage
