@@ -141,7 +141,10 @@ describe("SessionDatabase", async () => {
     });
 
     it("combines filters", async () => {
-      const s1 = await db.create({ name: "Active Claude", agentType: "claude" });
+      const s1 = await db.create({
+        name: "Active Claude",
+        agentType: "claude",
+      });
       await db.create({ name: "Idle Claude", agentType: "claude" });
       await db.create({ name: "Active Codex", agentType: "codex" });
 
@@ -157,7 +160,10 @@ describe("SessionDatabase", async () => {
 
   describe("update", async () => {
     it("updates name", async () => {
-      const session = await db.create({ name: "Old Name", agentType: "claude" });
+      const session = await db.create({
+        name: "Old Name",
+        agentType: "claude",
+      });
       const updated = db.update(session.id, { name: "New Name" });
 
       expect(updated).not.toBeNull();

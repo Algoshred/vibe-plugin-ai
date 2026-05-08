@@ -161,6 +161,27 @@ export interface VibePlugin {
   onServerStop?: () => void;
 }
 
+/**
+ * Minimal facade of the agent's ProfileContext. The plugin has no hard
+ * dependency on the agent package; it accepts whichever shape the agent
+ * passes that is structurally compatible with this interface.
+ */
+export interface ProfileContext {
+  name: string;
+  dataDir: string;
+  logger: {
+    info: (...args: unknown[]) => void;
+    warn: (...args: unknown[]) => void;
+    error: (...args: unknown[]) => void;
+    debug: (...args: unknown[]) => void;
+  };
+  audit?: {
+    emit: (event: string, payload?: unknown) => void;
+  };
+}
+
+export type VibePluginFactory = (ctx: ProfileContext) => VibePlugin;
+
 // ── Re-exports ───────────────────────────────────────────────────────────
 
 export type * from "./provider.js";
@@ -464,7 +485,14 @@ const logIngester = {
 
 // ── Plugin Export ────────────────────────────────────────────────────────
 
-export const vibePlugin: VibePlugin = {
+// Internal singleton object built from module-level state. Returned by
+// the createPlugin(ctx) factory below to satisfy Plugin Contract v2.
+// NOTE: full closure-encapsulation of the per-profile state (databases,
+// queueProcessor, hostServicesRef) is a follow-up — for now the factory
+// returns a reference to this module-level definition. Loading more than
+// one ProfileContext concurrently against this plugin is unsupported
+// until that refactor lands.
+const vibePlugin: VibePlugin = {
   capabilities: {
     storage: "rw",
     secrets: "read",
@@ -902,10 +930,7 @@ export const vibePlugin: VibePlugin = {
       .option("--cwd <dir>", "Project directory", process.cwd())
       .option("--json", "Emit JSON result")
       .action(
-        async (
-          toolName: string,
-          options: { cwd: string; json?: boolean },
-        ) => {
+        async (toolName: string, options: { cwd: string; json?: boolean }) => {
           const tool = AI_TOOLS.find((t) => t.name === toolName);
           if (!tool) {
             if (
@@ -994,9 +1019,7 @@ export const vibePlugin: VibePlugin = {
             console.log("\n  \x1b[1m── AI Tool Check ──\x1b[0m\n");
             let allInstalled = true;
             for (const { tool, installed, version } of rows) {
-              const icon = installed
-                ? "\x1b[32m✓\x1b[0m"
-                : "\x1b[31m✗\x1b[0m";
+              const icon = installed ? "\x1b[32m✓\x1b[0m" : "\x1b[31m✗\x1b[0m";
               console.log(
                 `  ${icon} ${tool.displayName.padEnd(20)} ${installed ? version.split("\n")[0] : "not installed"}`,
               );
@@ -1237,10 +1260,7 @@ export const vibePlugin: VibePlugin = {
       .option("--json", "Emit JSON")
       .option("--plain", "Force plain text output")
       .action(
-        async (
-          id: string,
-          options: { json?: boolean; plain?: boolean },
-        ) => {
+        async (id: string, options: { json?: boolean; plain?: boolean }) => {
           await runMultimode<ReturnType<PromptDatabase["getById"]>>({
             mode: pickOutputMode(options),
             fetchData: () => {
@@ -1382,10 +1402,7 @@ export const vibePlugin: VibePlugin = {
       .option("--json", "Emit JSON")
       .option("--plain", "Force plain text output")
       .action(
-        async (
-          id: string,
-          options: { json?: boolean; plain?: boolean },
-        ) => {
+        async (id: string, options: { json?: boolean; plain?: boolean }) => {
           await runMultimode<ReturnType<ContextDatabase["getById"]>>({
             mode: pickOutputMode(options),
             fetchData: () => {
@@ -1535,9 +1552,8 @@ export const vibePlugin: VibePlugin = {
             }
             return {
               total: sessions.total,
-              active: sessions.items.filter(
-                (s) => s.status !== "terminated",
-              ).length,
+              active: sessions.items.filter((s) => s.status !== "terminated")
+                .length,
               totalInputTokens: totalInput,
               totalOutputTokens: totalOutput,
             };
@@ -1585,10 +1601,7 @@ export const vibePlugin: VibePlugin = {
         "-s, --session <name>",
         "Session name (attach if exists, create if not)",
       )
-      .option(
-        "--list-harnesses",
-        "List harnesses that support `vibe ai run`",
-      )
+      .option("--list-harnesses", "List harnesses that support `vibe ai run`")
       .option("--json", "Emit JSON envelope on errors / list")
       .allowUnknownOption(true)
       .passThroughOptions()
@@ -1690,9 +1703,7 @@ function defaultSessionNameFor(harness: string): string {
 function formatRunCommand(spec: CliLaunchSpec, extraArgs: string[]): string {
   const parts = [spec.binary, ...(spec.baseArgs ?? []), ...extraArgs];
   return parts
-    .map((p) =>
-      /[\s"']/.test(p) ? `'${p.replace(/'/g, "'\\''")}'` : p,
-    )
+    .map((p) => (/[\s"']/.test(p) ? `'${p.replace(/'/g, "'\\''")}'` : p))
     .join(" ");
 }
 
@@ -1786,8 +1797,9 @@ export async function runAiRunCore(
   const env: Record<string, string> = { ...(spec.env ?? {}) };
 
   // Look up existing session if explicit name given.
-  let existing: Awaited<ReturnType<SessionProviderLike["list"]>>[number] | null =
-    null;
+  let existing:
+    | Awaited<ReturnType<SessionProviderLike["list"]>>[number]
+    | null = null;
   if (opts.session) {
     const all = await sessionProvider.list();
     existing = all.find((s) => s.name === sessionName) ?? null;
@@ -2059,8 +2071,8 @@ function registerStatusContributors(hostServices?: HostServices): void {
         if (list.length === 0) return "\x1b[2m(none)\x1b[22m";
         const providers = new Set<string>();
         for (const item of list) {
-          const p = (item as { provider?: string; agentType?: string })
-            ?.provider ??
+          const p =
+            (item as { provider?: string; agentType?: string })?.provider ??
             (item as { agentType?: string })?.agentType;
           if (p) providers.add(p);
         }
@@ -2133,4 +2145,13 @@ function registerStatusContributors(hostServices?: HostServices): void {
   });
 }
 
-export default vibePlugin;
+/**
+ * Plugin Contract v2 factory. The agent threads a ProfileContext into
+ * every plugin load; this factory ignores it for now (state remains at
+ * module scope) but the signature unblocks the v2 enforcement gate.
+ */
+export const createPlugin: VibePluginFactory = (
+  _ctx: ProfileContext,
+): VibePlugin => vibePlugin;
+
+export default createPlugin;
