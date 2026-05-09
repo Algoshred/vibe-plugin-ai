@@ -57,9 +57,28 @@ import { QueueProcessor } from "./services/queue-processor.js";
  */
 
 // ── Plugin Interfaces ────────────────────────────────────────────────────
+//
+// Plugin contract / host service / capability types come from
+// @vibecontrols/plugin-sdk — they are NOT redeclared here. The
+// AI-domain types (AIProviderSummary, RegisteredAIProvider, etc.) and
+// the agent-specific richer host surface (AIPluginHostServices) STAY
+// inline because they are AI-domain shapes / agent-specific
+// augmentations, not SDK surface.
+
+import type {
+  HostServices as SdkHostServices,
+  ProfileContext,
+  VibePlugin,
+  VibePluginFactory,
+} from "@vibecontrols/plugin-sdk/contract";
+import { createLifecycleHooks } from "@vibecontrols/plugin-sdk/lifecycle";
+import { BoundLogger } from "@vibecontrols/plugin-sdk/log";
+import { TelemetryEmitter } from "@vibecontrols/plugin-sdk/telemetry";
 
 import type { StorageProvider } from "./db/storage-provider-types.js";
 import type { ProviderMode } from "./provider.js";
+
+export type { ProfileContext, VibePlugin, VibePluginFactory };
 
 const PROVIDER_MODES: ProviderMode[] = ["sdk", "cli"];
 
@@ -106,81 +125,85 @@ export interface CliContributorRegistryLike {
   }): void;
 }
 
-export interface HostServices {
-  telemetry?: {
-    emit: (name: string, payload?: Record<string, unknown>) => void;
-  };
-  logger?: {
-    info: (source: string, msg: string) => void;
-    warn: (source: string, msg: string) => void;
-    error: (source: string, msg: string) => void;
-    debug: (source: string, msg: string) => void;
-  };
-  config?: Record<string, unknown>;
-  storage?: StorageProvider;
-  serviceRegistry?: {
-    registerService: (
-      pluginName: string,
-      serviceName: string,
-      service: unknown,
-    ) => void;
-    getProviderByName: <T>(type: string, name: string) => T | undefined;
-    listProvidersForType: (type: string) => Array<{
-      pluginName: string;
-      isDefault: boolean;
-    }>;
-  };
-  cliContributors?: CliContributorRegistryLike;
-}
-
-export interface PluginCapabilities {
-  storage?: "none" | "read" | "rw";
-  secrets?: "none" | "read" | "rw";
-  gateway?: boolean;
-  broadcast?: boolean;
-  subprocess?: boolean;
-  audit?: boolean;
-  telemetry?: boolean;
-}
-
-export interface VibePlugin {
-  capabilities?: PluginCapabilities;
-  name: string;
-  version: string;
-  description: string;
-  tags?: Array<
-    "backend" | "frontend" | "cli" | "provider" | "adapter" | "integration"
-  >;
-  cliCommand: string;
-  apiPrefix?: string;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  createRoutes?: () => any;
-  onCliSetup: (program: Command, hostServices?: HostServices) => void;
-  onServerStart?: (app: unknown, hostServices?: HostServices) => void;
-  onServerReady?: (app: unknown, hostServices?: HostServices) => void;
-  onServerStop?: () => void;
+/**
+ * Agent's runtime ServiceRegistry surface — richer than the SDK's
+ * structural minimum. The agent registry returns provider entries with
+ * `pluginName` + `isDefault` (vs. SDK's `string[]`), and supports a
+ * by-name `getProviderByName` lookup. Typed as a local extension to
+ * the SDK contract; this is NOT a redeclaration of any SDK type — it
+ * captures what the AI plugin reaches for at runtime against the
+ * vibecontrols-agent host.
+ */
+export interface AIPluginServiceRegistry {
+  registerService: (
+    pluginName: string,
+    serviceName: string,
+    service: unknown,
+  ) => void;
+  getProviderByName: <T>(type: string, name: string) => T | undefined;
+  listProvidersForType: (type: string) => Array<{
+    pluginName: string;
+    isDefault: boolean;
+  }>;
 }
 
 /**
- * Minimal facade of the agent's ProfileContext. The plugin has no hard
- * dependency on the agent package; it accepts whichever shape the agent
- * passes that is structurally compatible with this interface.
+ * Agent-specific host surface extension. The SDK's `HostServices` is
+ * the structural minimum every plugin can rely on; this plugin uses
+ * the agent's richer string-typed `StorageProvider` (with
+ * `list(): Promise<StorageEntry[]>`), the rich service registry above,
+ * and the CLI contributors registry. Augmentation, NOT redeclaration.
  */
-export interface ProfileContext {
-  name: string;
-  dataDir: string;
-  logger: {
-    info: (...args: unknown[]) => void;
-    warn: (...args: unknown[]) => void;
-    error: (...args: unknown[]) => void;
-    debug: (...args: unknown[]) => void;
-  };
-  audit?: {
-    emit: (event: string, payload?: unknown) => void;
-  };
+/**
+ * Agent's runtime logger surface — every method is required (SDK's
+ * SdkLogger has all-optional members). KVStore + QueueProcessor depend
+ * on the strict shape; typed locally because it's the agent's runtime
+ * contract, not an SDK redeclaration.
+ */
+export interface AIPluginLogger {
+  info: (source: string, msg: string) => void;
+  warn: (source: string, msg: string) => void;
+  error: (source: string, msg: string) => void;
+  debug: (source: string, msg: string) => void;
 }
 
-export type VibePluginFactory = (ctx: ProfileContext) => VibePlugin;
+export interface HostServices extends Omit<
+  SdkHostServices,
+  "storage" | "serviceRegistry" | "logger"
+> {
+  storage?: StorageProvider;
+  serviceRegistry?: AIPluginServiceRegistry;
+  cliContributors?: CliContributorRegistryLike;
+  logger?: AIPluginLogger;
+  config?: Record<string, unknown>;
+}
+
+/**
+ * Plugin shape: extends SDK's `VibePlugin` with the AI-plugin-specific
+ * hooks the agent's loader honours but that are not part of the SDK
+ * contract: `createRoutes(deps)` accepts a deps argument, `onServerReady`
+ * fires after start (queue processor needs it), and the lifecycle hooks
+ * use the rich `HostServices` extension above.
+ */
+type AiVibePlugin = Omit<
+  VibePlugin,
+  | "createRoutes"
+  | "onServerStart"
+  | "onServerStop"
+  | "onCliSetup"
+  | "cliCommand"
+> & {
+  cliCommand: string;
+  description: string;
+  createRoutes?: (deps?: { hostServices?: HostServices }) => unknown;
+  onCliSetup: (program: Command, hostServices?: HostServices) => void;
+  onServerStart?: (
+    app: unknown,
+    hostServices: SdkHostServices,
+  ) => void | Promise<void>;
+  onServerReady?: (app: unknown, hostServices?: HostServices) => void;
+  onServerStop?: (hostServices: SdkHostServices) => void | Promise<void>;
+};
 
 // ── Re-exports ───────────────────────────────────────────────────────────
 
@@ -522,7 +545,94 @@ export const createPlugin: VibePluginFactory = (
     });
   };
 
-  const vibePlugin: VibePlugin = {
+  const PLUGIN_NAME = "ai";
+  const PLUGIN_VERSION = "4.0.0";
+
+  const lifecycle = createLifecycleHooks({
+    name: PLUGIN_NAME,
+    telemetryEventName: "ai.meta.ready",
+    onInit: async (hostServices: SdkHostServices) => {
+      // The agent injects the richer AIPluginHostServices at runtime; the
+      // SDK's HostServices is the structural minimum.
+      const hs = hostServices as unknown as HostServices;
+      hostServicesRef = hs;
+
+      const log = new BoundLogger(hs.logger, "ai-plugin");
+
+      // Hydrate all KV tables from the agent's encrypted storage before
+      // handling any requests. DBs were constructed in createRoutes; here
+      // we warm the in-memory cache.
+      if (
+        promptDb &&
+        contextDb &&
+        sessionDb &&
+        logDb &&
+        dispatchDb &&
+        queueDb &&
+        fileDb
+      ) {
+        await Promise.all([
+          promptDb.hydrate(),
+          contextDb.hydrate(),
+          sessionDb.hydrate(),
+          logDb.hydrate(),
+          dispatchDb.hydrate(),
+          queueDb.hydrate(),
+          fileDb.hydrate(),
+        ]);
+      }
+
+      // Register log ingester service for provider plugins.
+      hs.serviceRegistry?.registerService(
+        PLUGIN_NAME,
+        "log-ingester",
+        logIngester,
+      );
+
+      log.info("AI orchestration hub started — all databases hydrated");
+    },
+    onShutdown: () => {
+      // Stop queue processor
+      if (queueProcessor) {
+        queueProcessor.stop();
+        queueProcessor = null;
+      }
+
+      // Close all databases
+      if (promptDb) {
+        promptDb.close();
+        promptDb = null;
+      }
+      if (contextDb) {
+        contextDb.close();
+        contextDb = null;
+      }
+      if (sessionDb) {
+        sessionDb.close();
+        sessionDb = null;
+      }
+      if (logDb) {
+        logDb.close();
+        logDb = null;
+      }
+      if (dispatchDb) {
+        dispatchDb.close();
+        dispatchDb = null;
+      }
+      if (queueDb) {
+        queueDb.close();
+        queueDb = null;
+      }
+      if (fileDb) {
+        fileDb.close();
+        fileDb = null;
+      }
+
+      hostServicesRef = null;
+    },
+  });
+
+  const vibePlugin: AiVibePlugin = {
     capabilities: {
       storage: "rw",
       secrets: "read",
@@ -532,8 +642,8 @@ export const createPlugin: VibePluginFactory = (
       audit: true,
       telemetry: true,
     },
-    name: "ai",
-    version: "4.0.0",
+    name: PLUGIN_NAME,
+    version: PLUGIN_VERSION,
     description:
       "AI orchestration hub — prompt templates, context management, session dispatch, logging, and stats",
     tags: ["backend", "cli", "integration"],
@@ -645,53 +755,12 @@ export const createPlugin: VibePluginFactory = (
       return app;
     },
 
-    async onServerStart(_app, hostServices) {
-      hostServices?.telemetry?.emit("ai.meta.ready", {});
-      hostServicesRef = hostServices || null;
-
-      // Hydrate all KV tables from the agent's encrypted storage
-      // before handling any requests. DBs were constructed in
-      // createRoutes; here we warm the in-memory cache.
-      if (
-        promptDb &&
-        contextDb &&
-        sessionDb &&
-        logDb &&
-        dispatchDb &&
-        queueDb &&
-        fileDb
-      ) {
-        await Promise.all([
-          promptDb.hydrate(),
-          contextDb.hydrate(),
-          sessionDb.hydrate(),
-          logDb.hydrate(),
-          dispatchDb.hydrate(),
-          queueDb.hydrate(),
-          fileDb.hydrate(),
-        ]);
-
-        // Legacy local database import is intentionally disabled. AI plugin
-        // state must flow through the agent storage provider backed by Skalex.
-      }
-
-      // Register log ingester service for provider plugins
-      if (hostServices?.serviceRegistry) {
-        hostServices.serviceRegistry.registerService(
-          "ai",
-          "log-ingester",
-          logIngester,
-        );
-      }
-
-      hostServices?.logger?.info(
-        "ai-plugin",
-        "AI orchestration hub started — all databases hydrated",
-      );
-    },
+    onServerStart: lifecycle.onServerStart,
 
     onServerReady(_app, hostServices) {
-      // Start queue processor
+      // Start queue processor (extra hook beyond the SDK contract — the
+      // agent's loader fires this after onServerStart so plugins can
+      // schedule background work after the Elysia app is ready).
       queueProcessor = new QueueProcessor({
         queueDb: getQueueDb(),
         dispatchDb: getDispatchDb(),
@@ -703,51 +772,24 @@ export const createPlugin: VibePluginFactory = (
       // Event-driven now — `start()` defaults to a 60s safety drain.
       queueProcessor.start();
 
-      hostServices?.logger?.info(
-        "ai-plugin",
-        "Queue processor started (event-driven)",
-      );
+      const log = new BoundLogger(hostServices?.logger, "ai-plugin");
+      log.info("Queue processor started (event-driven)");
+
+      // Tag the ready event from the queue processor side (the lifecycle
+      // helper already emitted ai.meta.ready on start). Cast through
+      // `unknown` because the local `HostServices` extension narrows
+      // `storage` to a string-typed shape that's structurally distinct
+      // from the SDK's generic StorageProvider — the TelemetryEmitter
+      // only reaches `hostServices.telemetry` so the storage divergence
+      // is irrelevant at runtime.
+      new TelemetryEmitter(
+        PLUGIN_NAME,
+        PLUGIN_VERSION,
+        hostServices as unknown as SdkHostServices,
+      ).emit("ai.queue.ready", {});
     },
 
-    onServerStop() {
-      // Stop queue processor
-      if (queueProcessor) {
-        queueProcessor.stop();
-        queueProcessor = null;
-      }
-
-      // Close all databases
-      if (promptDb) {
-        promptDb.close();
-        promptDb = null;
-      }
-      if (contextDb) {
-        contextDb.close();
-        contextDb = null;
-      }
-      if (sessionDb) {
-        sessionDb.close();
-        sessionDb = null;
-      }
-      if (logDb) {
-        logDb.close();
-        logDb = null;
-      }
-      if (dispatchDb) {
-        dispatchDb.close();
-        dispatchDb = null;
-      }
-      if (queueDb) {
-        queueDb.close();
-        queueDb = null;
-      }
-      if (fileDb) {
-        fileDb.close();
-        fileDb = null;
-      }
-
-      hostServicesRef = null;
-    },
+    onServerStop: lifecycle.onServerStop,
 
     onCliSetup(program: Command, hostServices?: HostServices) {
       registerStatusContributors(hostServices);
@@ -1685,7 +1727,13 @@ export const createPlugin: VibePluginFactory = (
     },
   };
 
-  return vibePlugin;
+  // The agent's loader honours the AiVibePlugin extras (rich
+  // `createRoutes(deps)`, `onServerReady`, `onCliSetup` with a
+  // commander `Command`) — these are agent-host extensions to the
+  // SDK's `VibePlugin` contract. Casting through `unknown` so the
+  // factory return-type stays SDK-compatible while exposing our
+  // richer surface to the host.
+  return vibePlugin as unknown as VibePlugin;
 };
 
 export default createPlugin;
