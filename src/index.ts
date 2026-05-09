@@ -4,7 +4,7 @@ import {
   runMultimode,
   pickOutputMode,
   maybePrintJson,
-} from "./utils/multimode.js";
+} from "@vibecontrols/plugin-sdk";
 import {
   interactiveTable,
   interactiveDetail,
