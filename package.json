@@ -38,7 +38,7 @@
     "url": "https://github.com/tvvignesh"
   },
   "license": "SEE LICENSE IN LICENSE",
-  "description": "AI tool management and prompt templates plugin for VibeControls Agent — manage AI tools, prompt templates with variables (Bun runtime)",
+  "description": "AI tool management and prompt templates plugin for VibeControls Agent \u2014 manage AI tools, prompt templates with variables (Bun runtime)",
   "dependencies": {
     "@vibecontrols/plugin-sdk": "2026.509.2",
     "elysia": "^1.4.26"
@@ -72,8 +72,8 @@
   },
   "homepage": "https://vibecontrols.com",
   "publishConfig": {
-    "access": "restricted",
-    "registry": "https://verdaccio.tooling.internal.burdenoff.com/"
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
   },
   "files": [
     "dist/**/*",
