@@ -775,6 +775,52 @@ export const createPlugin: VibePluginFactory = (
       const log = new BoundLogger(hostServices?.logger, "ai-plugin");
       log.info("Queue processor started (event-driven)");
 
+      // Contribute a context provider so the LLM Context feature can
+      // surface AI plugin state. Redacted by design: NO api keys, NO
+      // prompt content; only structural metadata. Late-resolve to be
+      // tolerant of SDK versions that predate `registerContextProvider`.
+      void (async () => {
+        try {
+          const sdkContext =
+            (await import("@vibecontrols/plugin-sdk/context")) as {
+              registerContextProvider?: (provider: {
+                name: string;
+                timeoutMs?: number;
+                getContext: () => Promise<{
+                  pluginName: string;
+                  description?: string;
+                  data: Record<string, unknown>;
+                }>;
+              }) => void;
+            };
+          sdkContext.registerContextProvider?.({
+            name: "ai",
+            timeoutMs: 1000,
+            async getContext() {
+              return {
+                pluginName: "ai",
+                description:
+                  "AI orchestration plugin — configured provider flags only (api keys never leave the agent).",
+                data: {
+                  providers: {
+                    anthropic: Boolean(process.env.ANTHROPIC_API_KEY),
+                    openai: Boolean(process.env.OPENAI_API_KEY),
+                    openrouter: Boolean(process.env.OPENROUTER_API_KEY),
+                    gemini: Boolean(process.env.GEMINI_API_KEY),
+                  },
+                  pluginVersion: PLUGIN_VERSION,
+                },
+              };
+            },
+          });
+          log.info("Registered ai context provider");
+        } catch (err) {
+          log.warn("Context provider registration failed", {
+            error: String(err),
+          });
+        }
+      })();
+
       // Tag the ready event from the queue processor side (the lifecycle
       // helper already emitted ai.meta.ready on start). Cast through
       // `unknown` because the local `HostServices` extension narrows
