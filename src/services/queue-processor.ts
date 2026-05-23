@@ -29,9 +29,9 @@ export interface QueueProcessorDeps {
   logDb: LogDatabase;
   getAIProvider: (agentType: string) => unknown | undefined;
   logger?: {
-    info: (source: string, msg: string) => void;
-    error: (source: string, msg: string) => void;
-    debug: (source: string, msg: string) => void;
+    info?: (source: string, msg: string, meta?: Record<string, unknown>) => void;
+    error?: (source: string, msg: string, meta?: Record<string, unknown>) => void;
+    debug?: (source: string, msg: string, meta?: Record<string, unknown>) => void;
   };
 }
 
@@ -56,7 +56,7 @@ export class QueueProcessor {
   start(safetyIntervalMs = SAFETY_INTERVAL_MS): void {
     if (this.intervalId || this.unsubscribeEnqueue) return;
 
-    this.deps.logger?.info(
+    this.deps.logger?.info?.(
       "queue-processor",
       `Started (event-driven, safety drain every ${safetyIntervalMs}ms)`,
     );
@@ -85,7 +85,7 @@ export class QueueProcessor {
     if (this.intervalId) {
       clearInterval(this.intervalId);
       this.intervalId = null;
-      this.deps.logger?.info("queue-processor", "Stopped");
+      this.deps.logger?.info?.("queue-processor", "Stopped");
     }
   }
 
@@ -126,7 +126,7 @@ export class QueueProcessor {
       const items = this.deps.queueDb.getReady(5);
       if (items.length === 0) return;
 
-      this.deps.logger?.debug(
+      this.deps.logger?.debug?.(
         "queue-processor",
         `Processing ${items.length} queued items`,
       );
@@ -135,7 +135,7 @@ export class QueueProcessor {
         await this.processItem(item.id);
       }
     } catch (err) {
-      this.deps.logger?.error(
+      this.deps.logger?.error?.(
         "queue-processor",
         `Queue processing error: ${err instanceof Error ? err.message : "unknown"}`,
       );
@@ -220,7 +220,7 @@ export class QueueProcessor {
       this.deps.sessionDb.update(session.id, { status: "active" });
       this.deps.queueDb.markCompleted(queueItemId);
 
-      this.deps.logger?.info(
+      this.deps.logger?.info?.(
         "queue-processor",
         `Completed: ${dispatch.id} → session ${session.id}`,
       );
@@ -238,7 +238,7 @@ export class QueueProcessor {
       this.deps.sessionDb.update(session.id, { status: "error" });
       this.deps.queueDb.markFailed(queueItemId, errorMsg);
 
-      this.deps.logger?.error(
+      this.deps.logger?.error?.(
         "queue-processor",
         `Failed: ${dispatch.id} — ${errorMsg}`,
       );
