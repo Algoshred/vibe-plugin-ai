@@ -239,11 +239,19 @@ export function createSessionRoutes(deps: SessionRouteDeps) {
             (provider as ModeAwareProvider).setMode?.(modeOverride);
           }
 
-          // If a model override is provided, update the provider session config
+          // If a model / permission-mode override is provided, update the
+          // provider session config. permissionMode is forwarded the same way
+          // model is so the user can change autonomy mid-session.
           const modelOverride = (body as Record<string, unknown>).model as
             | string
             | undefined;
-          if (modelOverride || targetAgentType !== session.agentType) {
+          const permissionModeOverride = (body as Record<string, unknown>)
+            .permissionMode as string | undefined;
+          if (
+            modelOverride ||
+            permissionModeOverride ||
+            targetAgentType !== session.agentType
+          ) {
             const configureSession = (provider as Record<string, unknown>)
               .configureSession as
               | ((
@@ -256,10 +264,23 @@ export function createSessionRoutes(deps: SessionRouteDeps) {
                 await configureSession(params.id, {
                   model: modelOverride || undefined,
                   agentType: targetAgentType,
+                  ...(permissionModeOverride
+                    ? { permissionMode: permissionModeOverride }
+                    : {}),
                 });
               } catch {
                 // Best-effort config update
               }
+            }
+            // Persist permissionMode into stored session config so reloads /
+            // provider re-creates (after restart) keep the chosen autonomy.
+            if (permissionModeOverride) {
+              sessionDb.update(params.id, {
+                config: {
+                  ...(session.config as Record<string, unknown>),
+                  permissionMode: permissionModeOverride,
+                },
+              });
             }
           }
 
@@ -385,6 +406,7 @@ export function createSessionRoutes(deps: SessionRouteDeps) {
             agentType: t.Optional(t.String()),
             model: t.Optional(t.String()),
             mode: t.Optional(t.String()),
+            permissionMode: t.Optional(t.String()),
             conversationHistory: t.Optional(
               t.Array(
                 t.Object({

@@ -49,6 +49,13 @@ export interface AISessionConfig {
   systemPrompt?: string;
   /** Working directory for the agent */
   workingDirectory?: string;
+  /**
+   * Autonomy / permission level for CLI-mode sessions. Provider-agnostic;
+   * each CLI plugin maps it to its native approval flags. Ignored by SDK
+   * adapters (direct API calls). Defaults to "acceptEdits" at the adapter
+   * when unset.
+   */
+  permissionMode?: PermissionMode;
   /** Additional provider-specific configuration */
   providerConfig?: Record<string, unknown>;
 }
@@ -166,6 +173,14 @@ export interface AIUsageStats {
 // ── Model & Capability Types ────────────────────────────────────────────
 
 export type ProviderMode = "sdk" | "cli";
+
+/**
+ * Autonomy level for CLI-mode sessions.
+ * - "plan": read-only / planning, no edits or commands applied.
+ * - "acceptEdits": auto-apply file edits, gate risky commands (default).
+ * - "fullAuto": unattended — run commands & edits without approval.
+ */
+export type PermissionMode = "plan" | "acceptEdits" | "fullAuto";
 
 export interface AIProviderModeMetadata {
   /** Modes this provider can execute for real requests. */
