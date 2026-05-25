@@ -239,11 +239,35 @@ export function createSessionRoutes(deps: SessionRouteDeps) {
             (provider as ModeAwareProvider).setMode?.(modeOverride);
           }
 
-          // If a model override is provided, update the provider session config
+          // If a model / permission-mode override is provided, update the
+          // provider session config. permissionMode is forwarded the same way
+          // model is so the user can change autonomy mid-session.
           const modelOverride = (body as Record<string, unknown>).model as
             | string
             | undefined;
-          if (modelOverride || targetAgentType !== session.agentType) {
+          // Read via the untyped body cast (the override path), so guard the
+          // value here too — the schema above tightens the typed `body`, but
+          // this cast bypasses it. Reject garbage rather than silently
+          // forwarding it (the adapter's acceptEdits fallback is defence-in-depth,
+          // not the boundary check).
+          const permissionModeOverride = (body as Record<string, unknown>)
+            .permissionMode as string | undefined;
+          if (
+            permissionModeOverride !== undefined &&
+            !["plan", "acceptEdits", "fullAuto"].includes(
+              permissionModeOverride,
+            )
+          ) {
+            set.status = 400;
+            return {
+              error: `Invalid permissionMode '${permissionModeOverride}'. Must be plan, acceptEdits, or fullAuto.`,
+            };
+          }
+          if (
+            modelOverride ||
+            permissionModeOverride ||
+            targetAgentType !== session.agentType
+          ) {
             const configureSession = (provider as Record<string, unknown>)
               .configureSession as
               | ((
@@ -256,10 +280,31 @@ export function createSessionRoutes(deps: SessionRouteDeps) {
                 await configureSession(params.id, {
                   model: modelOverride || undefined,
                   agentType: targetAgentType,
+                  // `undefined` is harmless in a config object; the outer `if`
+                  // already guards the whole block.
+                  permissionMode: permissionModeOverride,
                 });
               } catch {
                 // Best-effort config update
               }
+            }
+            // Persist permissionMode into stored session config AND refresh the
+            // in-memory `session.config` — the recovery path (ensureProviderSession)
+            // spreads `session.config`, so without this the prompt that requested
+            // the new autonomy could recreate the provider with the stale mode.
+            if (permissionModeOverride) {
+              const nextConfig = {
+                ...(session.config as Record<string, unknown>),
+                permissionMode: permissionModeOverride,
+              };
+              session.config = nextConfig;
+              sessionDb.update(params.id, { config: nextConfig });
+              // Audit trail for autonomy escalation (esp. fullAuto).
+              logDb.append({
+                sessionId: params.id,
+                type: "event",
+                content: `permissionMode set to ${permissionModeOverride}`,
+              });
             }
           }
 
@@ -385,6 +430,13 @@ export function createSessionRoutes(deps: SessionRouteDeps) {
             agentType: t.Optional(t.String()),
             model: t.Optional(t.String()),
             mode: t.Optional(t.String()),
+            permissionMode: t.Optional(
+              t.Union([
+                t.Literal("plan"),
+                t.Literal("acceptEdits"),
+                t.Literal("fullAuto"),
+              ]),
+            ),
             conversationHistory: t.Optional(
               t.Array(
                 t.Object({
