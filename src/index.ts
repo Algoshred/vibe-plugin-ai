@@ -34,7 +34,7 @@ import { createExportRoutes } from "./routes/export.js";
 import { QueueProcessor } from "./services/queue-processor.js";
 
 /**
- * @burdenoff/vibe-plugin-ai v4.0.0
+ * @vibecontrols/vibe-plugin-ai v4.0.0
  *
  * AI orchestration hub for VibeControls Agent.
  *

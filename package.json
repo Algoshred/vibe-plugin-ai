@@ -34,10 +34,9 @@
   ],
   "author": {
     "name": "Vignesh T.V",
-    "email": "vignesh@burdenoff.com",
     "url": "https://github.com/tvvignesh"
   },
-  "license": "SEE LICENSE IN LICENSE",
+  "license": "MIT",
   "description": "AI tool management and prompt templates plugin for VibeControls Agent — manage AI tools, prompt templates with variables (Bun runtime)",
   "dependencies": {
     "@vibecontrols/plugin-sdk": "2026.527.1",
