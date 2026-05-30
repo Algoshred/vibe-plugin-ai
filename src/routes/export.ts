@@ -140,7 +140,7 @@ function formatSessionMarkdown(
       lines.push(log.content);
       lines.push("```");
     } else if (log.type === "thinking") {
-      lines.push(`> ${log.content.replace(/\n/g, "\n> ")}`);
+      lines.push(`> ${log.content.replace(/\r?\n/g, "\n> ")}`);
     } else {
       lines.push(log.content);
     }

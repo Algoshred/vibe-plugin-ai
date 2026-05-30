@@ -93,15 +93,32 @@ export class SessionDatabase {
   }
 
   list(
-    filter?: { agentType?: string; status?: SessionStatus; search?: string },
+    filter?: {
+      agentType?: string;
+      status?: SessionStatus;
+      search?: string;
+      // Context "bucket" filters — vibeId/agentId/contextLevel are stamped into
+      // `config` at create time (see sessions route). Filtering here lets the UI
+      // show only the conversations belonging to the active agent/vibe context.
+      vibeId?: string;
+      agentId?: string;
+      contextLevel?: string;
+    },
     pagination?: { limit?: number; offset?: number },
   ): { items: AISessionRecord[]; total: number; hasMore: boolean } {
     const needle = filter?.search?.toLowerCase();
     return query(this.store.all(), {
-      filter: (r) =>
-        (!filter?.agentType || r.agentType === filter.agentType) &&
-        (!filter?.status || r.status === filter.status) &&
-        (!needle || r.name.toLowerCase().includes(needle)),
+      filter: (r) => {
+        const cfg = (r.config ?? {}) as Record<string, unknown>;
+        return (
+          (!filter?.agentType || r.agentType === filter.agentType) &&
+          (!filter?.status || r.status === filter.status) &&
+          (!filter?.vibeId || cfg.vibeId === filter.vibeId) &&
+          (!filter?.agentId || cfg.agentId === filter.agentId) &&
+          (!filter?.contextLevel || cfg.contextLevel === filter.contextLevel) &&
+          (!needle || r.name.toLowerCase().includes(needle))
+        );
+      },
       sort: (a, b) => b.createdAt.localeCompare(a.createdAt),
       limit: pagination?.limit ?? 50,
       offset: pagination?.offset ?? 0,

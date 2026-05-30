@@ -31,6 +31,8 @@ import { createCancelRoutes } from "./routes/cancel.js";
 import { createMcpRoutes } from "./routes/mcp.js";
 import { createSearchRoutes } from "./routes/search.js";
 import { createExportRoutes } from "./routes/export.js";
+import { createInstructionRoutes } from "./routes/instructions.js";
+import { createContextFileRoutes } from "./routes/context-files.js";
 import { QueueProcessor } from "./services/queue-processor.js";
 
 /**
@@ -746,6 +748,8 @@ export const createPlugin: VibePluginFactory = (
         createQueueRoutes(getQueueDb()),
         createStatsRoutes(getSessionDb(), getLogDb()),
         createApiDescriptorRoutes(),
+        createInstructionRoutes({ sessionDb: getSessionDb() }),
+        createContextFileRoutes({ sessionDb: getSessionDb() }),
       ];
 
       for (const subRoute of subRoutes) {
@@ -1263,7 +1267,7 @@ export const createPlugin: VibePluginFactory = (
                     `  \x1b[1m${prompt.name}\x1b[0m${shared}${tags}${uses}`,
                   );
                   const preview = prompt.content
-                    .replace(/\n/g, " ")
+                    .replace(/\r?\n/g, " ")
                     .slice(0, 60)
                     .trim();
                   console.log(
@@ -1342,7 +1346,7 @@ export const createPlugin: VibePluginFactory = (
                     `  \x1b[1m${prompt.name}\x1b[0m \x1b[90m(${prompt.usageCount} uses)\x1b[0m`,
                   );
                   const preview = prompt.content
-                    .replace(/\n/g, " ")
+                    .replace(/\r?\n/g, " ")
                     .slice(0, 60)
                     .trim();
                   console.log(
@@ -1486,7 +1490,7 @@ export const createPlugin: VibePluginFactory = (
                     `  \x1b[1m${ctx.name}\x1b[0m \x1b[90m(${ctx.type})\x1b[0m${tags}`,
                   );
                   const preview = ctx.content
-                    .replace(/\n/g, " ")
+                    .replace(/\r?\n/g, " ")
                     .slice(0, 60)
                     .trim();
                   console.log(

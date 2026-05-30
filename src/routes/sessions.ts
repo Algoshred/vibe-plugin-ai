@@ -54,10 +54,16 @@ export function createSessionRoutes(deps: SessionRouteDeps) {
             agentType?: string;
             status?: SessionStatus;
             search?: string;
+            vibeId?: string;
+            agentId?: string;
+            contextLevel?: string;
           } = {};
           if (query.agentType) filter.agentType = query.agentType;
           if (query.status) filter.status = query.status as SessionStatus;
           if (query.search) filter.search = query.search;
+          if (query.vibeId) filter.vibeId = query.vibeId;
+          if (query.agentId) filter.agentId = query.agentId;
+          if (query.contextLevel) filter.contextLevel = query.contextLevel;
 
           const pagination = {
             limit: query.limit ? parseInt(query.limit, 10) : 50,
@@ -74,6 +80,9 @@ export function createSessionRoutes(deps: SessionRouteDeps) {
             agentType: t.Optional(t.String()),
             status: t.Optional(t.String()),
             search: t.Optional(t.String()),
+            vibeId: t.Optional(t.String()),
+            agentId: t.Optional(t.String()),
+            contextLevel: t.Optional(t.String()),
             limit: t.Optional(t.String()),
             offset: t.Optional(t.String()),
           }),
@@ -122,7 +131,22 @@ export function createSessionRoutes(deps: SessionRouteDeps) {
             };
           }
 
-          const config = (body.config ?? {}) as Record<string, unknown>;
+          // Stamp the conversation's "context bucket" identity into config so the
+          // list endpoint can filter by it (vibe / agent context). These survive
+          // on the durable session record; the agent does not auth per-user — any
+          // vibe member who reaches this agent sees the vibe's sessions, matching
+          // the SHARED_WITH_VIBE semantics of the backend's linked entities.
+          const contextPatch: Record<string, unknown> = {};
+          if (body.vibeId) contextPatch.vibeId = body.vibeId;
+          if (body.agentId) contextPatch.agentId = body.agentId;
+          if (body.contextLevel) contextPatch.contextLevel = body.contextLevel;
+          if (body.workspaceId) contextPatch.workspaceId = body.workspaceId;
+          if (body.createdByUserId)
+            contextPatch.createdByUserId = body.createdByUserId;
+          const config = {
+            ...((body.config ?? {}) as Record<string, unknown>),
+            ...contextPatch,
+          };
           const providerConfig =
             typeof config.providerConfig === "object" &&
             config.providerConfig !== null
@@ -182,6 +206,12 @@ export function createSessionRoutes(deps: SessionRouteDeps) {
             name: t.String({ minLength: 1 }),
             agentType: t.String({ minLength: 1 }),
             config: t.Optional(t.Record(t.String(), t.Any())),
+            // Context-bucket identity (folded into config; see above).
+            vibeId: t.Optional(t.String()),
+            agentId: t.Optional(t.String()),
+            contextLevel: t.Optional(t.String()),
+            workspaceId: t.Optional(t.String()),
+            createdByUserId: t.Optional(t.String()),
           }),
         },
       )
