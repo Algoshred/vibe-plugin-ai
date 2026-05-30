@@ -29,9 +29,21 @@ export interface QueueProcessorDeps {
   logDb: LogDatabase;
   getAIProvider: (agentType: string) => unknown | undefined;
   logger?: {
-    info?: (source: string, msg: string, meta?: Record<string, unknown>) => void;
-    error?: (source: string, msg: string, meta?: Record<string, unknown>) => void;
-    debug?: (source: string, msg: string, meta?: Record<string, unknown>) => void;
+    info?: (
+      source: string,
+      msg: string,
+      meta?: Record<string, unknown>,
+    ) => void;
+    error?: (
+      source: string,
+      msg: string,
+      meta?: Record<string, unknown>,
+    ) => void;
+    debug?: (
+      source: string,
+      msg: string,
+      meta?: Record<string, unknown>,
+    ) => void;
   };
 }
 

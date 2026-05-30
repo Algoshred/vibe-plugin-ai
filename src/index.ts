@@ -651,6 +651,40 @@ export const createPlugin: VibePluginFactory = (
     tags: ["backend", "cli", "integration"],
     cliCommand: "ai",
     apiPrefix: "/api/ai",
+    metaProviders: [
+      {
+        packageName: "@vibecontrols/vibe-plugin-ai-claude",
+        pluginName: "claude",
+      },
+      {
+        packageName: "@vibecontrols/vibe-plugin-ai-codex",
+        pluginName: "codex",
+      },
+      {
+        packageName: "@vibecontrols/vibe-plugin-ai-opencode",
+        pluginName: "opencode",
+      },
+      {
+        packageName: "@vibecontrols/vibe-plugin-ai-gemini",
+        pluginName: "gemini",
+      },
+      {
+        packageName: "@vibecontrols/vibe-plugin-ai-cursor",
+        pluginName: "cursor",
+      },
+      {
+        packageName: "@vibecontrols/vibe-plugin-ai-openrouter",
+        pluginName: "openrouter",
+      },
+      {
+        packageName: "@vibecontrols/vibe-plugin-ai-minimax",
+        pluginName: "minimax",
+      },
+      {
+        packageName: "@vibecontrols/vibe-plugin-ai-ollama",
+        pluginName: "ollama",
+      },
+    ],
 
     createRoutes(deps?: { hostServices?: HostServices }) {
       // Build all sub-routes first, then compose into a single Elysia

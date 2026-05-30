@@ -6,7 +6,11 @@
  * a malicious filename can never escape the working dir.
  */
 import { describe, expect, it } from "bun:test";
-import { isPathInside, safeBasename, safeJoinWithin } from "../../routes/safe-fs.js";
+import {
+  isPathInside,
+  safeBasename,
+  safeJoinWithin,
+} from "../../routes/safe-fs.js";
 
 describe("isPathInside", () => {
   it("accepts the dir itself and children", () => {
