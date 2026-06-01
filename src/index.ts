@@ -4,6 +4,7 @@ import {
   runMultimode,
   pickOutputMode,
   maybePrintJson,
+  provisionMetaProviders,
 } from "@vibecontrols/plugin-sdk";
 import {
   interactiveTable,
@@ -69,6 +70,7 @@ import { QueueProcessor } from "./services/queue-processor.js";
 
 import type {
   HostServices as SdkHostServices,
+  MetaProviderRef,
   ProfileContext,
   VibePlugin,
   VibePluginFactory,
@@ -403,6 +405,45 @@ function normalizeModes(modes: ProviderMode[] | undefined): ProviderMode[] {
 // ── Plugin Export ────────────────────────────────────────────────────────
 
 /**
+ * Provider packages this meta routes to + per-platform defaults. The meta —
+ * not the agent — installs/loads/prereqs/elects them via `provisionProviders`.
+ */
+const AI_PROVIDERS: ReadonlyArray<MetaProviderRef> = [
+  {
+    packageName: "@vibecontrols/vibe-plugin-ai-claude",
+    pluginName: "claude",
+  },
+  {
+    packageName: "@vibecontrols/vibe-plugin-ai-codex",
+    pluginName: "codex",
+  },
+  {
+    packageName: "@vibecontrols/vibe-plugin-ai-opencode",
+    pluginName: "opencode",
+  },
+  {
+    packageName: "@vibecontrols/vibe-plugin-ai-gemini",
+    pluginName: "gemini",
+  },
+  {
+    packageName: "@vibecontrols/vibe-plugin-ai-cursor",
+    pluginName: "cursor",
+  },
+  {
+    packageName: "@vibecontrols/vibe-plugin-ai-openrouter",
+    pluginName: "openrouter",
+  },
+  {
+    packageName: "@vibecontrols/vibe-plugin-ai-minimax",
+    pluginName: "minimax",
+  },
+  {
+    packageName: "@vibecontrols/vibe-plugin-ai-ollama",
+    pluginName: "ollama",
+  },
+];
+
+/**
  * Plugin Contract v2 factory.
  *
  * All per-profile state (7 DB handles, queueProcessor, hostServicesRef)
@@ -651,40 +692,9 @@ export const createPlugin: VibePluginFactory = (
     tags: ["backend", "cli", "integration"],
     cliCommand: "ai",
     apiPrefix: "/api/ai",
-    metaProviders: [
-      {
-        packageName: "@vibecontrols/vibe-plugin-ai-claude",
-        pluginName: "claude",
-      },
-      {
-        packageName: "@vibecontrols/vibe-plugin-ai-codex",
-        pluginName: "codex",
-      },
-      {
-        packageName: "@vibecontrols/vibe-plugin-ai-opencode",
-        pluginName: "opencode",
-      },
-      {
-        packageName: "@vibecontrols/vibe-plugin-ai-gemini",
-        pluginName: "gemini",
-      },
-      {
-        packageName: "@vibecontrols/vibe-plugin-ai-cursor",
-        pluginName: "cursor",
-      },
-      {
-        packageName: "@vibecontrols/vibe-plugin-ai-openrouter",
-        pluginName: "openrouter",
-      },
-      {
-        packageName: "@vibecontrols/vibe-plugin-ai-minimax",
-        pluginName: "minimax",
-      },
-      {
-        packageName: "@vibecontrols/vibe-plugin-ai-ollama",
-        pluginName: "ollama",
-      },
-    ],
+    metaProviders: AI_PROVIDERS,
+    provisionProviders: (hostServices: SdkHostServices) =>
+      provisionMetaProviders(hostServices, AI_PROVIDERS),
 
     createRoutes(deps?: { hostServices?: HostServices }) {
       // Build all sub-routes first, then compose into a single Elysia
