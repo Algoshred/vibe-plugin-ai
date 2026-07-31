@@ -13,12 +13,12 @@
     "lint:sanity": "if [ \"${CI:-}\" = \"true\" ]; then bun run lint; else bun run lint -- --cache --cache-location .eslintcache; fi",
     "format": "bunx prettier . --write",
     "format:check": "bunx prettier . --check",
-    "type:check": "tsc --noEmit",
+    "type:check": "bash scripts/build-limits.sh tsc --noEmit",
     "clean": "rimraf dist",
     "prebuild": "bun run clean",
     "prepublishOnly": "bun run build",
     "test": "bun test",
-    "sanity": "bun run format:check && bun run lint:sanity && bun run type:check && bun run build && bun run test"
+    "sanity": "bash scripts/build-limits.sh --gate bash -c 'bun run format:check && bun run lint:sanity && bun run type:check && bun run build && bun run test'"
   },
   "keywords": [
     "vibecontrols",
