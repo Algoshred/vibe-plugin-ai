@@ -1120,6 +1120,22 @@ export const createPlugin: VibePluginFactory = (
             }
             const dir = options.cwd;
             const primaryConfig = tool.configFiles[0];
+            if (primaryConfig === undefined) {
+              if (
+                maybePrintJson(options, {
+                  ok: false,
+                  action: "init",
+                  tool: tool.name,
+                  error: `Tool '${tool.name}' declares no config files`,
+                })
+              ) {
+                process.exit(1);
+              }
+              console.error(
+                `\x1b[31mError:\x1b[0m Tool '${tool.name}' declares no config files.`,
+              );
+              process.exit(1);
+            }
             const configPath = join(dir, primaryConfig);
             try {
               if (Bun.file(configPath).size >= 0) {

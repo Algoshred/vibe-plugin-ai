@@ -136,9 +136,6 @@ describe("LogDatabase", () => {
 
     it("filters by date range", () => {
       db.append({ sessionId: "sess-1", type: "input", content: "before" });
-
-      const now = new Date().toISOString();
-
       db.append({ sessionId: "sess-1", type: "output", content: "after" });
 
       // All logs were created very close in time, so this tests the SQL path
