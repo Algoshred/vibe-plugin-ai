@@ -2005,8 +2005,7 @@ export async function runAiRunCore(
 
   // Look up existing session if explicit name given.
   let existing:
-    | Awaited<ReturnType<SessionProviderLike["list"]>>[number]
-    | null = null;
+    Awaited<ReturnType<SessionProviderLike["list"]>>[number] | null = null;
   if (opts.session) {
     const all = await sessionProvider.list();
     existing = all.find((s) => s.name === sessionName) ?? null;

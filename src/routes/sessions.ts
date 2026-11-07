@@ -273,8 +273,7 @@ export function createSessionRoutes(deps: SessionRouteDeps) {
           // provider session config. permissionMode is forwarded the same way
           // model is so the user can change autonomy mid-session.
           const modelOverride = (body as Record<string, unknown>).model as
-            | string
-            | undefined;
+            string | undefined;
           // Read via the untyped body cast (the override path), so guard the
           // value here too — the schema above tightens the typed `body`, but
           // this cast bypasses it. Reject garbage rather than silently
@@ -379,8 +378,7 @@ export function createSessionRoutes(deps: SessionRouteDeps) {
           let fullPrompt = body.prompt;
           const history = (body as Record<string, unknown>)
             .conversationHistory as
-            | Array<{ role: string; content: string }>
-            | undefined;
+            Array<{ role: string; content: string }> | undefined;
           if (history && history.length > 0) {
             const historyText = history
               .map((msg) => `[${msg.role.toUpperCase()}]: ${msg.content}`)

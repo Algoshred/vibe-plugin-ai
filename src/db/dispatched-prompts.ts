@@ -12,12 +12,7 @@ import type { StorageProvider } from "./storage-provider-types.js";
 // ── Types ───────────────────────────────────────────────────────────────
 
 export type DispatchStatus =
-  | "draft"
-  | "queued"
-  | "dispatched"
-  | "processing"
-  | "completed"
-  | "failed";
+  "draft" | "queued" | "dispatched" | "processing" | "completed" | "failed";
 
 export interface DispatchedPromptRecord {
   id: string;

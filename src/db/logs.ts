@@ -13,12 +13,7 @@ import type { StorageProvider } from "./storage-provider-types.js";
 // ── Types ───────────────────────────────────────────────────────────────
 
 export type LogType =
-  | "input"
-  | "output"
-  | "thinking"
-  | "event"
-  | "error"
-  | "metadata";
+  "input" | "output" | "thinking" | "event" | "error" | "metadata";
 
 export interface AILogRecord {
   id: string;

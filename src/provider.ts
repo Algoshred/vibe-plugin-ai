@@ -11,19 +11,10 @@
 // ── Types ───────────────────────────────────────────────────────────────
 
 export type AISessionStatus =
-  | "active"
-  | "idle"
-  | "processing"
-  | "error"
-  | "terminated";
+  "active" | "idle" | "processing" | "error" | "terminated";
 
 export type AILogType =
-  | "input"
-  | "output"
-  | "thinking"
-  | "event"
-  | "error"
-  | "metadata";
+  "input" | "output" | "thinking" | "event" | "error" | "metadata";
 
 export type AIContextType =
   | "git_repo"

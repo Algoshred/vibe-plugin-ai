@@ -13,11 +13,7 @@ import type { StorageProvider } from "./storage-provider-types.js";
 // ── Types ───────────────────────────────────────────────────────────────
 
 export type QueueStatus =
-  | "pending"
-  | "processing"
-  | "completed"
-  | "failed"
-  | "cancelled";
+  "pending" | "processing" | "completed" | "failed" | "cancelled";
 
 export interface QueueItem {
   id: string;

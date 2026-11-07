@@ -13,11 +13,7 @@ import type { StorageProvider } from "./storage-provider-types.js";
 // ── Types ───────────────────────────────────────────────────────────────
 
 export type SessionStatus =
-  | "active"
-  | "idle"
-  | "processing"
-  | "error"
-  | "terminated";
+  "active" | "idle" | "processing" | "error" | "terminated";
 
 export interface AISessionRecord {
   id: string;
